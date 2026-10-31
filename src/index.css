@@ -1,0 +1,154 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ */
+/*  Design tokens — paleta inspirada no Discord                        */
+/* ------------------------------------------------------------------ */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --color-dc-darkest: #1e1f22;
+  --color-dc-darker: #2b2d31;
+  --color-dc-dark: #313338;
+  --color-dc-light: #383a40;
+  --color-dc-hover: #404249;
+  --color-dc-border: #3f4147;
+
+  --color-dc-brand: #5865f2;
+  --color-dc-brand-hover: #4752c4;
+  --color-dc-brand-soft: #7983f5;
+
+  --color-dc-green: #23a55a;
+  --color-dc-red: #da373c;
+  --color-dc-red-hover: #a12d2f;
+  --color-dc-yellow: #f0b232;
+
+  --color-dc-text: #dbdee1;
+  --color-dc-header: #f2f3f5;
+  --color-dc-muted: #949ba4;
+  --color-dc-faint: #6d6f78;
+
+  --animate-speak: speak 1.4s ease-in-out infinite;
+  --animate-toast-in: toast-in 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  --animate-fade-up: fade-up 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-float: float 9s ease-in-out infinite;
+  --animate-live: live 1.6s ease-in-out infinite;
+
+  @keyframes speak {
+    0%, 100% { box-shadow: 0 0 0 3px #23a55a, 0 0 0 3px rgb(35 165 90 / 0.45); }
+    50% { box-shadow: 0 0 0 3px #23a55a, 0 0 0 9px rgb(35 165 90 / 0); }
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateY(-8px) scale(0.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes float {
+    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+    50% { transform: translate3d(30px, -40px, 0) scale(1.08); }
+  }
+  @keyframes live {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Base                                                               */
+/* ------------------------------------------------------------------ */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-dc-darkest text-dc-text font-sans antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  ::selection {
+    background: rgb(88 101 242 / 0.45);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #1a1b1e transparent;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Componentes utilitários                                            */
+/* ------------------------------------------------------------------ */
+@layer components {
+  .dc-input {
+    @apply w-full rounded-md bg-dc-darkest px-3 py-2.5 text-[15px] text-dc-header outline-none
+      ring-1 ring-transparent transition placeholder:text-dc-faint
+      focus:ring-dc-brand;
+  }
+
+  .dc-label {
+    @apply mb-2 block text-xs font-bold uppercase tracking-wide text-dc-muted;
+  }
+
+  .dc-btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-md bg-dc-brand px-4 py-2.5 font-semibold text-white
+      transition hover:bg-dc-brand-hover active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50
+      disabled:hover:bg-dc-brand;
+  }
+
+  .dc-btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-md bg-dc-light px-3 py-2 text-sm font-medium text-dc-text
+      transition hover:bg-dc-hover active:scale-[0.98];
+  }
+
+  .speaking-ring {
+    @apply animate-speak;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Slider de volume                                                   */
+/* ------------------------------------------------------------------ */
+.dc-range {
+  --val: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(to right, #5865f2 0%, #5865f2 var(--val), #4e5058 var(--val), #4e5058 100%);
+  outline: none;
+  cursor: pointer;
+}
+.dc-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.5);
+  transition: transform 0.15s ease;
+}
+.dc-range:hover::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+.dc-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.5);
+}
+.dc-range:focus-visible {
+  box-shadow: 0 0 0 2px #5865f2;
+}
+
+/* Vídeo em tela cheia sem bordas */
+.stage-fullscreen:fullscreen {
+  background: #000;
+  border-radius: 0;
+}
