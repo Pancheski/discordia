@@ -4,6 +4,7 @@ import type {
   AppActivityId,
   ChatSnapshot,
   GamepadStatePayload,
+  GolfHoleEvent,
   GolfResetEvent,
   GolfStrokeEvent,
   MediaKind,
@@ -44,6 +45,7 @@ export function useRoom() {
   const [wheelState, setWheelState] = useState<WheelState>(INITIAL_WHEEL)
   const [lastGolfStroke, setLastGolfStroke] = useState<GolfStrokeEvent | null>(null)
   const [lastGolfReset, setLastGolfReset] = useState<GolfResetEvent | null>(null)
+  const [lastGolfHole, setLastGolfHole] = useState<GolfHoleEvent | null>(null)
   const [remotePlay, setRemotePlay] = useState(INITIAL_REMOTE_PLAY)
   const toastIdRef = useRef(0)
   const toastTimers = useRef(new Map<number, number>())
@@ -80,6 +82,7 @@ export function useRoom() {
       setWheelState(INITIAL_WHEEL)
       setLastGolfStroke(null)
       setLastGolfReset(null)
+      setLastGolfHole(null)
       setRemotePlay(INITIAL_REMOTE_PLAY)
       const manager = new RoomManager({
         onChange: setSnapshot,
@@ -91,6 +94,7 @@ export function useRoom() {
         onWheelChange: setWheelState,
         onGolfStroke: setLastGolfStroke,
         onGolfReset: setLastGolfReset,
+        onGolfHole: setLastGolfHole,
         onRemotePlayChange: setRemotePlay,
       })
       managerRef.current = manager
@@ -116,6 +120,7 @@ export function useRoom() {
     setWheelState(INITIAL_WHEEL)
     setLastGolfStroke(null)
     setLastGolfReset(null)
+    setLastGolfHole(null)
     setRemotePlay(INITIAL_REMOTE_PLAY)
   }, [])
 
@@ -176,6 +181,11 @@ export function useRoom() {
     [],
   )
   const sendGolfReset = useCallback(() => managerRef.current?.sendGolfReset(), [])
+  const sendGolfHole = useCallback(
+    (seed?: number, holeNumber?: number, par?: number) =>
+      managerRef.current?.sendGolfHole(seed, holeNumber, par),
+    [],
+  )
 
   // Remote Play / Jogar Junto (Gamepad API -> WebRTC -> ViGEmBus)
   const grantRemotePlay = useCallback(
@@ -236,11 +246,13 @@ export function useRoom() {
     wheelState,
     lastGolfStroke,
     lastGolfReset,
+    lastGolfHole,
     launchApp,
     updateWheelOptions,
     spinWheel,
     sendGolfStroke,
     sendGolfReset,
+    sendGolfHole,
     remotePlay,
     grantRemotePlay,
     sendGamepadState,

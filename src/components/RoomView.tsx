@@ -57,11 +57,13 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     wheelState,
     lastGolfStroke,
     lastGolfReset,
+    lastGolfHole,
     launchApp,
     updateWheelOptions,
     spinWheel,
     sendGolfStroke,
     sendGolfReset,
+    sendGolfHole,
     remotePlay,
     grantRemotePlay,
     sendGamepadState,
@@ -580,8 +582,10 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                       participants={golfParticipants}
                       lastStroke={lastGolfStroke}
                       lastReset={lastGolfReset}
+                      lastHole={lastGolfHole}
                       onSendStroke={sendGolfStroke}
                       onSendReset={sendGolfReset}
+                      onSendHole={sendGolfHole}
                     />
                   </>
                 )}

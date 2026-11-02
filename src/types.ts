@@ -84,6 +84,7 @@ export type PeerMessage =
   | { type: 'wheel:spin'; targetAngle: number; winnerIndex: number; startedBy: string; options: string[] }
   | { type: 'golf:stroke'; peerId: string; name: string; vx: number; vz: number }
   | { type: 'golf:reset'; courseIndex?: number }
+  | { type: 'golf:hole'; seed: number; holeNumber: number; par: number }
   | {
       type: 'gamepad:grant'
       hostId: string
@@ -152,6 +153,13 @@ export interface GolfStrokeEvent {
 export interface GolfResetEvent {
   seq: number
   courseIndex: number
+}
+
+export interface GolfHoleEvent {
+  seq: number
+  seed: number
+  holeNumber: number
+  par: number
 }
 
 // ─── Duelo 1v1: Pedra, Papel e Tesoura (Melhor de 3) ────────────────────

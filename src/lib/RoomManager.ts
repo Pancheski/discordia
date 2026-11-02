@@ -34,6 +34,7 @@ import type {
   AppActivityId,
   ChatSnapshot,
   GamepadStatePayload,
+  GolfHoleEvent,
   GolfResetEvent,
   GolfStrokeEvent,
   LocalState,
@@ -107,6 +108,7 @@ export interface RoomManagerCallbacks {
   onWheelChange: (state: WheelState) => void
   onGolfStroke: (stroke: GolfStrokeEvent | null) => void
   onGolfReset: (reset: GolfResetEvent | null) => void
+  onGolfHole: (hole: GolfHoleEvent | null) => void
   onRemotePlayChange: (state: { grant: RemotePlayGrant | null; companionConnected: boolean }) => void
 }
 
@@ -799,6 +801,24 @@ export class RoomManager {
     this.broadcastMsg({
       type: 'golf:reset',
       courseIndex: 0,
+    })
+  }
+
+  sendGolfHole(seed?: number, holeNumber?: number, par?: number): void {
+    if (this.destroyed) return
+    const actualSeed = typeof seed === 'number' ? seed : Math.floor(Math.random() * 1000000)
+    const hole: GolfHoleEvent = {
+      seq: ++this.golfSeq,
+      seed: actualSeed,
+      holeNumber: holeNumber ?? 1,
+      par: par ?? 3,
+    }
+    this.cb.onGolfHole(hole)
+    this.broadcastMsg({
+      type: 'golf:hole',
+      seed: hole.seed,
+      holeNumber: hole.holeNumber,
+      par: hole.par,
     })
   }
 
@@ -1964,6 +1984,17 @@ export class RoomManager {
           seq: ++this.golfSeq,
           courseIndex: msg.courseIndex ?? 0,
         })
+        return
+      }
+      case 'golf:hole': {
+        if (typeof msg.seed === 'number') {
+          this.cb.onGolfHole({
+            seq: ++this.golfSeq,
+            seed: msg.seed,
+            holeNumber: msg.holeNumber ?? 1,
+            par: msg.par ?? 3,
+          })
+        }
         return
       }
       case 'gamepad:grant': {
