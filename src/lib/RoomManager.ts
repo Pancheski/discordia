@@ -20,7 +20,15 @@ import {
   createInitialTrioState,
   resolveTrioTurnAfterDelay,
 } from './trioEngine'
-import { MAX_PEERS, clamp, sanitizeName, slotPeerId, slugifyRoom } from './utils'
+import {
+  MAX_PEERS,
+  clamp,
+  generateSessionPeerId,
+  getOrCreateSessionId,
+  sanitizeName,
+  slotPeerId,
+  slugifyRoom,
+} from './utils'
 import { playSoundboardSfx, playUiSfx } from '../hooks/useAudioSystem'
 import type {
   AppActivityId,
@@ -77,6 +85,7 @@ interface PeerLink {
   teardownTimer: number | null
   helloTimer: number | null
   retryTimer: number | null
+  iceDisconnectTimer: number | null
   discoveredAt: number
   visible: boolean
   greeted: boolean
@@ -220,23 +229,32 @@ export class RoomManager {
     }
     if (this.destroyed) return false
 
-    // 2) Reivindica um assento livre na sala e aguarda estritamente o evento peer.on('open')
+    // 2) Reivindica um peerId determinístico e único por aba via sessionStorage (sem colisão de slots)
     let lastError: unknown = null
-    for (let slot = 0; slot < MAX_PEERS; slot++) {
+    const baseSessionId = getOrCreateSessionId(room)
+
+    for (let attempt = 0; attempt < 3; attempt++) {
       if (this.destroyed) return false
+      const sessionId =
+        attempt === 0
+          ? baseSessionId
+          : `${baseSessionId}-${attempt}-${Math.random().toString(36).slice(2, 6)}`
+      const targetPeerId = generateSessionPeerId(room, sessionId)
       try {
-        const peer = await this.claimSlot(slotPeerId(room, slot))
+        const peer = await this.claimSlot(targetPeerId)
         if (this.destroyed) {
           peer.destroy()
           return false
         }
         this.peer = peer
-        this.local.slot = slot
+        this.local.slot = 0
         this.local.peerId = peer.id
         break
       } catch (err) {
-        if (isPeerError(err) && err.type === 'unavailable-id') continue
         lastError = err
+        if (isPeerError(err) && err.type === 'unavailable-id') {
+          continue
+        }
         break
       }
     }
@@ -246,7 +264,7 @@ export class RoomManager {
         'error',
         lastError
           ? `Não foi possível conectar ao servidor de sinalização (${describeError(lastError)}).`
-          : `A sala "${room}" está cheia (máximo de ${MAX_PEERS} pessoas).`,
+          : `Não foi possível ingressar na sala "${room}".`,
       )
       this.releaseLocalMedia()
       this.status = 'error'
@@ -1489,6 +1507,7 @@ export class RoomManager {
       teardownTimer: null,
       helloTimer: null,
       retryTimer: null,
+      iceDisconnectTimer: null,
       discoveredAt: Date.now(),
       visible: markVisible,
       greeted: false,
@@ -1505,10 +1524,21 @@ export class RoomManager {
         connectionState: 'connecting',
       },
     }
-    link.teardownTimer = window.setTimeout(() => {
+    link.teardownTimer = window.setTimeout(async () => {
       const l = this.links.get(id)
-      if (l && !l.data?.open && !l.info.micStream) this.removeLink(id, false)
-    }, ORPHAN_LINK_TIMEOUT_MS)
+      if (!l || l.data?.open || l.info.micStream) return
+      try {
+        const members = await getPresence().getRoomMembers(this.room)
+        if (members.some((m) => m.id === id)) {
+          l.visible = true
+          this.schedulePeerRecovery(id)
+          return
+        }
+      } catch {
+        /* ignore */
+      }
+      this.removeLink(id, false)
+    }, ORPHAN_LINK_TIMEOUT_MS * 2)
     this.links.set(id, link)
     return link
   }
@@ -1653,19 +1683,48 @@ export class RoomManager {
       const ice = pc.iceConnectionState
       const state = pc.connectionState
       if (ice === 'connected' || ice === 'completed' || state === 'connected') {
+        if (link.iceDisconnectTimer !== null) {
+          window.clearTimeout(link.iceDisconnectTimer)
+          link.iceDisconnectTimer = null
+        }
         if (link.info.connectionState !== 'connected') {
           link.info.connectionState = 'connected'
           this.emit()
         }
-      } else if (ice === 'failed' || ice === 'disconnected' || state === 'failed') {
-        console.warn(`[WebRTC] ICE/Conexão degradada com ${link.id}: ice=${ice} state=${state}`)
+      } else if (ice === 'disconnected') {
+        if (link.info.connectionState === 'connected') {
+          link.info.connectionState = 'reconnecting'
+          this.emit()
+        }
+        if (link.iceDisconnectTimer === null) {
+          link.iceDisconnectTimer = window.setTimeout(() => {
+            link.iceDisconnectTimer = null
+            if (this.destroyed || !this.links.has(link.id)) return
+            const curIce = pc.iceConnectionState
+            if (curIce === 'disconnected' || curIce === 'failed') {
+              console.warn(`[WebRTC] DataChannel permaneceu disconnected por 15s com ${link.id}. Reiniciando...`)
+              try {
+                pc.restartIce?.()
+              } catch {
+                /* ignore */
+              }
+              this.schedulePeerRecovery(link.id)
+            }
+          }, 15_000)
+        }
+      } else if (ice === 'failed' || state === 'failed') {
+        console.warn(`[WebRTC] DataChannel ICE/Conexão falhou com ${link.id}: ice=${ice} state=${state}. Renegociando...`)
+        if (link.iceDisconnectTimer !== null) {
+          window.clearTimeout(link.iceDisconnectTimer)
+          link.iceDisconnectTimer = null
+        }
+        link.info.connectionState = 'reconnecting'
+        this.emit()
         try {
           pc.restartIce?.()
         } catch {
           /* ignore */
         }
-        link.info.connectionState = 'error'
-        this.emit()
         this.schedulePeerRecovery(link.id)
       }
     }
@@ -1997,6 +2056,7 @@ export class RoomManager {
     if (link.teardownTimer !== null) window.clearTimeout(link.teardownTimer)
     if (link.helloTimer !== null) window.clearInterval(link.helloTimer)
     if (link.retryTimer !== null) window.clearTimeout(link.retryTimer)
+    if (link.iceDisconnectTimer !== null) window.clearTimeout(link.iceDisconnectTimer)
     link.detector?.stop()
     link.detector = null
     if (link.gamepadChannel) {
@@ -2290,24 +2350,49 @@ export class RoomManager {
       const state = pc.connectionState
       const ice = pc.iceConnectionState
       if (state === 'connected' || ice === 'connected' || ice === 'completed') {
+        if (link.iceDisconnectTimer !== null) {
+          window.clearTimeout(link.iceDisconnectTimer)
+          link.iceDisconnectTimer = null
+        }
         applyTuning()
         if (link.info.connectionState !== 'connected') {
           link.info.connectionState = 'connected'
           this.emit()
         }
-      } else if (state === 'failed' || ice === 'failed' || ice === 'disconnected') {
-        console.warn(`[WebRTC] ICE state=${ice} / conn=${state} (${kind}) com ${link.id}. Renegociando...`)
+      } else if (ice === 'disconnected') {
+        console.warn(`[WebRTC] ICE disconnected (${kind}) com ${link.id}. Aguardando 15s para TURN assumir...`)
+        if (link.info.connectionState === 'connected') {
+          link.info.connectionState = 'reconnecting'
+          this.emit()
+        }
+        if (link.iceDisconnectTimer === null) {
+          link.iceDisconnectTimer = window.setTimeout(() => {
+            link.iceDisconnectTimer = null
+            if (this.destroyed || !this.links.has(link.id)) return
+            const curIce = pc.iceConnectionState
+            if (curIce === 'disconnected' || curIce === 'failed') {
+              console.warn(`[WebRTC] ICE permaneceu disconnected por 15s (${kind}) com ${link.id}. Reiniciando chamada...`)
+              try {
+                pc.restartIce?.()
+              } catch {
+                /* ignore */
+              }
+              this.schedulePeerRecovery(link.id)
+            }
+          }, 15_000)
+        }
+      } else if (state === 'failed' || ice === 'failed') {
+        console.warn(`[WebRTC] ICE/Call failed (${kind}) com ${link.id}. Disparando renegociação automática...`)
+        if (link.iceDisconnectTimer !== null) {
+          window.clearTimeout(link.iceDisconnectTimer)
+          link.iceDisconnectTimer = null
+        }
+        link.info.connectionState = 'reconnecting'
+        this.emit()
         try {
           pc.restartIce?.()
         } catch {
           /* ignore */
-        }
-        if (state === 'failed' || ice === 'failed') {
-          pc.removeEventListener('connectionstatechange', onState)
-          pc.oniceconnectionstatechange = null
-          link.info.connectionState = 'error'
-          this.emit()
-          call.close()
         }
         this.schedulePeerRecovery(link.id)
       }

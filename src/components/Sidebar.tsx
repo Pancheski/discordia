@@ -232,7 +232,7 @@ function PeerStatusLabel({ state }: { state: PeerConnectionState }) {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] font-medium text-dc-green">
         <span className="h-1.5 w-1.5 rounded-full bg-dc-green" />
-        Conectado · P2P
+        Conectado
       </span>
     )
   }
@@ -240,14 +240,14 @@ function PeerStatusLabel({ state }: { state: PeerConnectionState }) {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] font-medium text-dc-red">
         <span className="h-1.5 w-1.5 rounded-full bg-dc-red animate-pulse" />
-        Erro de ICE/Conexão
+        Reconectando rota...
       </span>
     )
   }
   return (
     <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400">
       <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
-      A ligar...
+      Conectando rota...
     </span>
   )
 }

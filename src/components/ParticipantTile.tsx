@@ -68,7 +68,7 @@ export function ParticipantTile({
                 className={`h-2 w-2 shrink-0 rounded-full ${
                   connectionState === 'error' ? 'bg-dc-red animate-pulse' : 'bg-amber-400 animate-pulse'
                 }`}
-                title={connectionState === 'error' ? 'Erro de ICE/Conexão' : 'Conectando...'}
+                title={connectionState === 'error' ? 'Reconectando rota...' : 'Conectando rota...'}
               />
             )}
             {muted && <MicOff size={13} className="shrink-0 text-dc-red" />}
@@ -223,10 +223,10 @@ export function ParticipantTile({
                 }`}
               />
               {connectionState === 'connected'
-                ? 'Conectado via P2P'
+                ? 'Conectado'
                 : connectionState === 'error'
-                  ? 'Erro de ICE/Conexão'
-                  : 'Conectando...'}
+                  ? 'Reconectando rota...'
+                  : 'Conectando rota...'}
             </span>
           )}
         </div>

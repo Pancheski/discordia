@@ -16,7 +16,31 @@ export function slugifyRoom(input: string): string {
     .slice(0, 48)
 }
 
-/** Cada sala possui MAX_PEERS "assentos" com IDs determinísticos. */
+/** Gera ou recupera um ID único de sessão para a aba atual no sessionStorage */
+export function getOrCreateSessionId(room: string): string {
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      const key = `discordia:session:${room}`
+      let sid = sessionStorage.getItem(key)
+      if (!sid || sid.length < 4) {
+        sid = Math.random().toString(36).slice(2, 10)
+        sessionStorage.setItem(key, sid)
+      }
+      return sid
+    }
+  } catch {
+    /* fallback */
+  }
+  return Math.random().toString(36).slice(2, 10)
+}
+
+/** Gera um peerId determinístico e único para a sessão da aba na sala */
+export function generateSessionPeerId(room: string, customSessionId?: string): string {
+  const sid = customSessionId || getOrCreateSessionId(room)
+  return `${APP_PREFIX}-${room}-${sid}`
+}
+
+/** Mantido para retrocompatibilidade em discovery */
 export function slotPeerId(room: string, slot: number): string {
   return `${APP_PREFIX}-${room}-${slot}`
 }

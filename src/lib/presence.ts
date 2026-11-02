@@ -5,6 +5,7 @@ import {
   onValue,
   ref,
   remove,
+  serverTimestamp,
   update,
 } from 'firebase/database'
 import type { Database } from 'firebase/database'
@@ -131,15 +132,46 @@ export function normalizeTree(tree: RawTree, now = Date.now()): NormalizedTree {
 
 export function normalizeRoomMembers(
   rawMembers: Record<string, RawMember | null> | null | undefined,
-  now = Date.now(),
+  peerLocalActivityOrNow?: Map<string, { lastFirebaseVal: string; localSeenAt: number }> | number,
+  explicitNow?: number,
 ): PresenceRoomMember[] {
   if (!rawMembers || typeof rawMembers !== 'object') return []
+  const peerLocalActivity =
+    peerLocalActivityOrNow instanceof Map ? peerLocalActivityOrNow : undefined
+  const now =
+    typeof peerLocalActivityOrNow === 'number'
+      ? peerLocalActivityOrNow
+      : explicitNow ?? Date.now()
+
   const list: PresenceRoomMember[] = []
   for (const [id, m] of Object.entries(rawMembers)) {
     if (!m || !KEY_RE.test(id)) continue
+
+    // Clock Skew Proof:
+    // Se dispomos do mapa de atividade local medido pelo relógio deste cliente, só descarta se
+    // o registro do membro no Firebase não mudar por mais de 45 segundos do NOSSO relógio.
+    if (peerLocalActivity) {
+      const firebaseVal = `${m.last_seen ?? ''}_${m.name ?? ''}`
+      const prev = peerLocalActivity.get(id)
+      if (!prev || prev.lastFirebaseVal !== firebaseVal) {
+        peerLocalActivity.set(id, { lastFirebaseVal: firebaseVal, localSeenAt: now })
+      }
+      const localSeen = peerLocalActivity.get(id)!.localSeenAt
+      if (now - localSeen > 45_000) {
+        continue
+      }
+    } else {
+      const lastSeen = num(m.last_seen)
+      // Se não temos mapa de atividade, aplica tolerância ampla (60s) para não derrubar relógio atrasado
+      if (lastSeen > 0 && Math.abs(now - lastSeen) > 60_000) {
+        const joinedAt = num(m.joined_at)
+        if (!joinedAt || Math.abs(now - joinedAt) > 60_000) {
+          continue
+        }
+      }
+    }
+
     const lastSeen = num(m.last_seen)
-    // Se last_seen for 0 (acabou de ser inserido sem timestamp ou relógio dessincronizado), aceita como ativo
-    if (lastSeen > 0 && now - lastSeen > PRESENCE_STALE_MS) continue
     const joinedAt = num(m.joined_at) || lastSeen || now
     list.push({
       id,
@@ -160,6 +192,7 @@ class FirebasePresence implements PresenceProvider {
   private readonly root: string
   private readonly db: Database | null
   private readonly disconnectRegistered = new Set<string>()
+  private readonly peerLocalActivity = new Map<string, { lastFirebaseVal: string; localSeenAt: number }>()
 
   constructor(databaseUrl: string, root: string) {
     const cleanUrl = databaseUrl.replace(/\/+$/, '')
@@ -193,7 +226,7 @@ class FirebasePresence implements PresenceProvider {
     const res = await fetch(this.url(`${roomId}/members`), { cache: 'no-store' })
     if (!res.ok) return []
     const rawMembers = (await res.json()) as Record<string, RawMember | null> | null
-    return normalizeRoomMembers(rawMembers)
+    return normalizeRoomMembers(rawMembers, this.peerLocalActivity)
   }
 
   watchRoomMembers(roomId: string, callback: (members: PresenceRoomMember[]) => void): () => void {
@@ -210,22 +243,12 @@ class FirebasePresence implements PresenceProvider {
         (snapshot) => {
           const rawMembers = (snapshot.val() ?? null) as Record<string, RawMember | null> | null
           const now = Date.now()
-          const activeMembers = normalizeRoomMembers(rawMembers, now)
+          const activeMembers = normalizeRoomMembers(rawMembers, this.peerLocalActivity, now)
 
-          // Remove membros expirados (stale) caso tenham ficado órfãos
-          if (rawMembers && typeof rawMembers === 'object') {
-            for (const [peerId, raw] of Object.entries(rawMembers)) {
-              const lastSeen = num(raw?.last_seen)
-              if (lastSeen > 0 && now - lastSeen > PRESENCE_STALE_MS) {
-                void remove(ref(db, `${this.root}/${roomId}/members/${peerId}`)).catch(() => undefined)
-              }
-            }
-          }
-
-          // Atualiza `count` da sala para refletir Object.keys(roomData.members || {}).length
+          // Atualiza `count` da sala para refletir membros ativos
           const liveCount = activeMembers.length
           if (liveCount > 0) {
-            void update(roomRef, { count: liveCount, last_seen: now }).catch(() => undefined)
+            void update(roomRef, { count: liveCount, last_seen: serverTimestamp() }).catch(() => undefined)
           }
 
           callback(activeMembers)
@@ -279,10 +302,10 @@ class FirebasePresence implements PresenceProvider {
       }
 
       const payload: Record<string, unknown> = {
-        last_seen: now,
+        last_seen: serverTimestamp(),
         [`members/${member.id}`]: {
           name: cleanName,
-          last_seen: now,
+          last_seen: serverTimestamp(),
           joined_at: joinedAt,
         },
       }
@@ -294,13 +317,13 @@ class FirebasePresence implements PresenceProvider {
       return
     }
 
-    // Fallback HTTP PATCH
+    // Fallback HTTP PATCH com Server Timestamp do Firebase REST { ".sv": "timestamp" }
     const body: Record<string, unknown> = {
       ...(typeof count === 'number' && count > 0 ? { count } : {}),
-      last_seen: now,
+      last_seen: { '.sv': 'timestamp' },
       [`members/${member.id}`]: {
         name: cleanName,
-        last_seen: now,
+        last_seen: { '.sv': 'timestamp' },
         joined_at: joinedAt,
       },
     }
