@@ -1,4 +1,5 @@
-import { app, BrowserWindow, desktopCapturer, ipcMain, shell, session } from 'electron'
+import { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, shell, session } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -31,10 +32,6 @@ interface NativeVigemController {
 
 /**
  * Motor de Controle Virtual XInput integrado ao processo principal do Electron.
- * Opera 100% invisível em segundo plano:
- * 1. Tenta carregar o addon nativo `node-vigem` (caso instalado no ambiente).
- * 2. Caso contrário, inicia de forma invisível (`windowsHide: true`) o binário/script
- *    embutido do driver ViGEmBus e encaminha os pacotes `gamepad:state` sem janelas extras.
  */
 class IntegratedGamepadHost {
   private vigemController: NativeVigemController | null = null
@@ -51,7 +48,6 @@ class IntegratedGamepadHost {
 
   private tryInitNativeVigem(): void {
     try {
-      // Carregamento dinâmico opcional de node-vigem se presente no sistema
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const ViGEmClient = require('node-vigem')
       const client = new ViGEmClient()
@@ -186,7 +182,6 @@ class IntegratedGamepadHost {
     if (this.wsConnecting) return
     this.wsConnecting = true
 
-    // Verifica rapidamente se a porta local 8765 está aberta antes de conectar o WebSocket
     const probe = new net.Socket()
     probe.setTimeout(350)
     probe.once('connect', () => {
@@ -259,8 +254,25 @@ class IntegratedGamepadHost {
 const gamepadHost = new IntegratedGamepadHost()
 let mainWindow: BrowserWindow | null = null
 
+function getAppIcon(): string {
+  const candidates = [
+    path.join(__dirname, '../public/icon.ico'),
+    path.join(__dirname, '../dist/icon.ico'),
+    path.join(app.getAppPath(), 'public/icon.ico'),
+    path.join(app.getAppPath(), 'dist/icon.ico'),
+  ]
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+  return path.join(__dirname, '../public/icon.ico')
+}
+
 function createMainWindow(): void {
   mainWindow = new BrowserWindow({
+    title: 'Discordia',
+    icon: getAppIcon(),
     width: 1360,
     height: 840,
     minWidth: 940,
@@ -277,7 +289,6 @@ function createMainWindow(): void {
     },
   })
 
-  // Permite captura de tela + áudio do sistema nativamente no Electron sem janelas bloqueadas
   session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
     desktopCapturer
       .getSources({ types: ['screen', 'window'] })
@@ -292,7 +303,6 @@ function createMainWindow(): void {
       .catch(() => callback({}))
   })
 
-  // Concede automaticamente permissões de microfone, captura de tela e áudio no app nativo
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     const allowed = ['media', 'display-capture', 'fullscreen', 'notifications', 'audioCapture']
     callback(allowed.includes(permission))
@@ -317,7 +327,7 @@ function createMainWindow(): void {
   })
 }
 
-// IPC da Barra de Título Customizada (Minimize / Maximize / Close)
+// ─── IPC Janela (Minimize / Maximize / Close) ─────────────────────────────────
 ipcMain.on('window:minimize', () => {
   mainWindow?.minimize()
 })
@@ -335,7 +345,7 @@ ipcMain.on('window:close', () => {
   mainWindow?.close()
 })
 
-// IPC de Remote Play (Gamepad API -> Electron Main Process)
+// ─── IPC Remote Play ──────────────────────────────────────────────────────────
 ipcMain.on('gamepad:state', (_event, payload: unknown) => {
   if (payload && typeof payload === 'object') {
     gamepadHost.handlePacket(payload as GamepadPacket)
@@ -346,9 +356,67 @@ ipcMain.on('gamepad:release', () => {
   gamepadHost.handlePacket({ type: 'gamepad:release' })
 })
 
+// ─── Global Shortcuts (Mute / Deafen) ────────────────────────────────────────
+interface RegisteredShortcuts {
+  toggleMute: string
+  toggleDeafen: string
+}
+
+ipcMain.on('register-global-shortcuts', (_event, shortcuts: RegisteredShortcuts) => {
+  globalShortcut.unregisterAll()
+
+  if (shortcuts?.toggleMute && shortcuts.toggleMute.trim()) {
+    try {
+      globalShortcut.register(shortcuts.toggleMute.trim(), () => {
+        mainWindow?.webContents.send('shortcut-triggered', 'toggle-mute')
+      })
+    } catch (err) {
+      console.warn('[globalShortcut] Erro ao registrar mute:', shortcuts.toggleMute, err)
+    }
+  }
+
+  if (shortcuts?.toggleDeafen && shortcuts.toggleDeafen.trim()) {
+    try {
+      globalShortcut.register(shortcuts.toggleDeafen.trim(), () => {
+        mainWindow?.webContents.send('shortcut-triggered', 'toggle-deafen')
+      })
+    } catch (err) {
+      console.warn('[globalShortcut] Erro ao registrar deafen:', shortcuts.toggleDeafen, err)
+    }
+  }
+})
+
+// ─── Auto-Update via electron-updater ─────────────────────────────────────────
+ipcMain.on('update:restart-and-install', () => {
+  autoUpdater.quitAndInstall()
+})
+
+function initAutoUpdater(): void {
+  // Executa verificação apenas em produção empacotada
+  if (!app.isPackaged) return
+
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('update-available', (info) => {
+    mainWindow?.webContents.send('update-available', { version: info.version })
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    mainWindow?.webContents.send('update-downloaded', { version: info.version })
+  })
+
+  autoUpdater.on('error', (err) => {
+    console.warn('[electron-updater] Erro na verificação:', err?.message || err)
+  })
+
+  void autoUpdater.checkForUpdatesAndNotify()
+}
+
 app.whenReady().then(() => {
   gamepadHost.start()
   createMainWindow()
+  initAutoUpdater()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -358,6 +426,7 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  globalShortcut.unregisterAll()
   gamepadHost.stop()
   if (process.platform !== 'darwin') {
     app.quit()
@@ -365,6 +434,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
   gamepadHost.stop()
 })
-

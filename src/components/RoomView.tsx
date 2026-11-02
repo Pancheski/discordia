@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Eye, Gamepad2, Hash, Maximize2, MessageSquare, MicOff, MonitorUp, Power, Rocket, Users, Volume2 } from 'lucide-react'
+import { Eye, Gamepad2, Hash, Maximize2, MessageSquare, MicOff, MonitorUp, Power, Rocket, Users, Volume2, VolumeX } from 'lucide-react'
 import { AppLauncherModal } from './AppLauncherModal'
 import { AudioSink } from './AudioSink'
 import { ChatSidebar } from './ChatSidebar'
 import { ControlBar } from './ControlBar'
+import { KeybindSettingsModal } from './KeybindSettingsModal'
 import { MiniGolfGame } from './MiniGolfGame'
 import { ParticipantTile } from './ParticipantTile'
 import { RemotePlayControl } from './RemotePlayControl'
@@ -16,6 +17,7 @@ import { SoundboardPopover } from './SoundboardPopover'
 import { TrioGame3D } from './TrioGame3D'
 import { playUiSfx } from '../hooks/useAudioSystem'
 import type { RoomController } from '../hooks/useRoom'
+import { loadSavedKeybinds, type KeybindShortcuts } from '../lib/keybinds'
 import { buildRoomLink, copyToClipboard, detectCapabilities } from '../lib/utils'
 import type { AppActivityId, RoomSnapshot } from '../types'
 
@@ -28,6 +30,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
   const { local, participants, room, voiceStreams, screenStreams } = snapshot
   const {
     toggleMute,
+    toggleDeafen,
     startScreenShare,
     stopScreenShare,
     leave,
@@ -68,6 +71,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
   const [chatOpen, setChatOpen] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 1024 : true))
   const [soundboardOpen, setSoundboardOpen] = useState(false)
   const [appsModalOpen, setAppsModalOpen] = useState(false)
+  const [keybindsModalOpen, setKeybindsModalOpen] = useState(false)
   const [remotePlayModalOpen, setRemotePlayModalOpen] = useState(false)
   const [minimizedApp, setMinimizedApp] = useState<AppActivityId>(null)
   const [watchedScreenId, setWatchedScreenId] = useState<string | null>(null)
@@ -77,6 +81,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
   const [readUpTo, setReadUpTo] = useState(0)
   const prevMsgCountRef = useRef(chat.messages.length)
   const screenSupported = useMemo(() => detectCapabilities().screenShare, [])
+  const isElectron = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
 
   const memberNames = useMemo(
     () => [local.name, ...participants.map((p) => p.name)].filter(Boolean),
@@ -209,18 +214,86 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     void startScreenShare()
   }, [local.screenStream, startScreenShare, stopScreenShare, watchedScreenId])
 
+  // ─── Atalhos Globais e Navegador (Mute / Deafen) ─────────────────────────
+  const [activeKeybinds, setActiveKeybinds] = useState<KeybindShortcuts>(loadSavedKeybinds)
+
+  // Registra no Electron via IPC ao iniciar ou alterar
   useEffect(() => {
+    if (isElectron && window.electron?.registerGlobalShortcuts) {
+      window.electron.registerGlobalShortcuts(activeKeybinds)
+    }
+  }, [isElectron, activeKeybinds])
+
+  // Escuta atalhos globais disparados pelo processo principal do Electron
+  useEffect(() => {
+    if (!isElectron || !window.electron?.onShortcutTriggered) return
+
+    const unsub = window.electron.onShortcutTriggered((action) => {
+      if (action === 'toggle-mute') {
+        toggleMute()
+      } else if (action === 'toggle-deafen') {
+        toggleDeafen()
+      }
+    })
+
+    return () => unsub()
+  }, [isElectron, toggleMute, toggleDeafen])
+
+  // Escuta de atalhos no navegador (dentro da janela)
+  useEffect(() => {
+    const parseShortcut = (accel: string) => {
+      const parts = accel.split('+').map((p) => p.trim())
+      const key = parts[parts.length - 1]
+      const needsCtrl = parts.includes('CommandOrControl') || parts.includes('Control') || parts.includes('Command')
+      const needsShift = parts.includes('Shift')
+      const needsAlt = parts.includes('Alt')
+      return { key, needsCtrl, needsShift, needsAlt }
+    }
+
+    const muteDef = parseShortcut(activeKeybinds.toggleMute)
+    const deafenDef = parseShortcut(activeKeybinds.toggleDeafen)
+
+    const matches = (e: KeyboardEvent, def: ReturnType<typeof parseShortcut>) => {
+      const hasCtrl = e.ctrlKey || e.metaKey
+      if (def.needsCtrl !== hasCtrl) return false
+      if (def.needsShift !== e.shiftKey) return false
+      if (def.needsAlt !== e.altKey) return false
+
+      const checkKey = def.key.toUpperCase()
+      if (checkKey.startsWith('F') && /^F\d{1,2}$/.test(checkKey)) {
+        return e.code.toUpperCase() === checkKey
+      }
+      return e.key.toUpperCase() === checkKey || e.code.toUpperCase() === `KEY${checkKey}`
+    }
+
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
-      if (e.key.toLowerCase() === 'm' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+
+      // Atalho customizado de Mute
+      if (matches(e, muteDef)) {
+        e.preventDefault()
+        toggleMute()
+        return
+      }
+
+      // Atalho customizado de Deafen
+      if (matches(e, deafenDef)) {
+        e.preventDefault()
+        toggleDeafen()
+        return
+      }
+
+      // Atalho rápido clássico de M (se não colidir com combinação)
+      if (e.key.toLowerCase() === 'm' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
         e.preventDefault()
         toggleMute()
       }
     }
+
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleMute])
+  }, [activeKeybinds, toggleMute, toggleDeafen])
 
   const tiles = [
     {
@@ -381,6 +454,22 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           onSendGamepadState={sendGamepadState}
           onRetryCompanion={connectCompanionBridge}
         />
+
+        {local.deafened && (
+          <div className="z-30 flex shrink-0 items-center justify-between gap-2 border-b border-dc-red/40 bg-dc-red/20 px-4 py-1.5 text-xs text-rose-200">
+            <span className="inline-flex items-center gap-2 font-semibold">
+              <VolumeX size={15} className="shrink-0 text-dc-red" />
+              <span>Você está ensurdecido (áudio de entrada e microfone desativados).</span>
+            </span>
+            <button
+              type="button"
+              onClick={toggleDeafen}
+              className="shrink-0 rounded bg-dc-red/30 px-2.5 py-0.5 text-[11px] font-bold text-white transition hover:bg-dc-red/40"
+            >
+              Desativar
+            </button>
+          </div>
+        )}
 
         {autoplayBlocked && (
           <div className="z-40 flex shrink-0 items-center justify-between gap-3 border-b border-dc-brand/40 bg-dc-brand/25 px-4 py-2 text-xs text-white shadow-lg backdrop-blur">
@@ -577,6 +666,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
         <ControlBar
           room={room}
           muted={local.muted}
+          deafened={local.deafened}
           micAvailable={local.micAvailable}
           sharing={!!local.screenStream}
           screenSupported={screenSupported}
@@ -587,10 +677,12 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           activeApp={activeApp}
           meshState={meshState}
           onToggleMute={toggleMute}
+          onToggleDeafen={toggleDeafen}
           onToggleScreen={toggleScreen}
           onToggleSoundboard={() => setSoundboardOpen((o) => !o)}
           onToggleApps={() => setAppsModalOpen((o) => !o)}
           onToggleChat={toggleChat}
+          onOpenSettings={() => setKeybindsModalOpen(true)}
           onLeave={leave}
           onCopyLink={() => void copyLink()}
         />
@@ -625,16 +717,26 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
         onStopApp={() => handleLaunchApp(null)}
       />
 
+      <KeybindSettingsModal
+        open={keybindsModalOpen}
+        onClose={() => setKeybindsModalOpen(false)}
+        onSave={(shortcuts) => setActiveKeybinds(shortcuts)}
+      />
+
+      {/* Áudio recebido dos participantes: mudo quando local.deafened for verdadeiro */}
       {participants.map((p) => {
         const voiceStream = voiceStreams[p.peerId] ?? p.micStream
         const screenStream = screenStreams[p.peerId] ?? p.screenStream
         const isWatchingThisScreen = watchedScreen?.id === p.peerId
+        const effectiveVoiceVolume = local.deafened ? 0 : p.voiceVolume
+        const effectiveScreenVolume = local.deafened ? 0 : p.screenVolume
+
         return (
           <div key={p.peerId} aria-hidden="true">
             {voiceStream && (
               <AudioSink
                 stream={voiceStream}
-                volume={p.voiceVolume}
+                volume={effectiveVoiceVolume}
                 unlockSignal={audioUnlockSignal}
                 onAutoplayBlocked={handleAutoplayBlocked}
                 onAutoplayResolved={handleAutoplayResolved}
@@ -643,7 +745,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
             {isWatchingThisScreen && screenStream && screenStream.getAudioTracks().length > 0 && (
               <AudioSink
                 stream={screenStream}
-                volume={p.screenVolume}
+                volume={effectiveScreenVolume}
                 unlockSignal={audioUnlockSignal}
                 onAutoplayBlocked={handleAutoplayBlocked}
                 onAutoplayResolved={handleAutoplayResolved}

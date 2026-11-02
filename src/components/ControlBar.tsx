@@ -1,5 +1,6 @@
 import {
   AudioWaveform,
+  Headphones,
   Link2,
   MessageSquare,
   Mic,
@@ -8,7 +9,9 @@ import {
   MonitorUp,
   PhoneOff,
   Rocket,
+  Settings,
   Signal,
+  VolumeX,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { AppActivityId, PeerConnectionState } from '../types'
@@ -16,6 +19,7 @@ import type { AppActivityId, PeerConnectionState } from '../types'
 interface ControlBarProps {
   room: string
   muted: boolean
+  deafened: boolean
   micAvailable: boolean
   sharing: boolean
   screenSupported: boolean
@@ -26,10 +30,12 @@ interface ControlBarProps {
   activeApp: AppActivityId
   meshState?: PeerConnectionState
   onToggleMute: () => void
+  onToggleDeafen: () => void
   onToggleScreen: () => void
   onToggleSoundboard: () => void
   onToggleApps: () => void
   onToggleChat: () => void
+  onOpenSettings: () => void
   onLeave: () => void
   onCopyLink: () => void
 }
@@ -37,6 +43,7 @@ interface ControlBarProps {
 export function ControlBar({
   room,
   muted,
+  deafened,
   micAvailable,
   sharing,
   screenSupported,
@@ -47,14 +54,17 @@ export function ControlBar({
   activeApp,
   meshState = 'connected',
   onToggleMute,
+  onToggleDeafen,
   onToggleScreen,
   onToggleSoundboard,
   onToggleApps,
   onToggleChat,
+  onOpenSettings,
   onLeave,
   onCopyLink,
 }: ControlBarProps) {
   const micLabel = !micAvailable ? 'Ativar microfone' : muted ? 'Ativar microfone' : 'Silenciar microfone'
+  const deafenLabel = deafened ? 'Desativar ensurdecer' : 'Ensurdecer'
   const appLabel = activeApp
     ? `Atividades · ${activeApp === 'trio' ? 'TRIO' : activeApp === 'wheel' ? 'Roleta' : 'Mini Golf'}`
     : 'Atividades'
@@ -94,6 +104,15 @@ export function ControlBar({
         </ControlButton>
 
         <ControlButton
+          id="deafen-toggle-button"
+          label={deafenLabel}
+          onClick={onToggleDeafen}
+          variant={deafened ? 'danger' : 'neutral'}
+        >
+          {deafened ? <VolumeX size={21} /> : <Headphones size={21} />}
+        </ControlButton>
+
+        <ControlButton
           id="screen-toggle-button"
           label={sharing ? 'Parar Transmissão' : 'Compartilhar Tela'}
           onClick={onToggleScreen}
@@ -130,6 +149,15 @@ export function ControlBar({
           badge={unreadCount > 0 ? String(unreadCount > 9 ? '9+' : unreadCount) : undefined}
         >
           <MessageSquare size={20} />
+        </ControlButton>
+
+        <ControlButton
+          id="keybind-settings-button"
+          label="Atalhos de Teclado"
+          onClick={onOpenSettings}
+          variant="neutral"
+        >
+          <Settings size={20} />
         </ControlButton>
 
         <ControlButton id="leave-button" label="Desconectar" onClick={onLeave} variant="leave">

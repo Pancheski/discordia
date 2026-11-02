@@ -156,6 +156,7 @@ export class RoomManager {
     name: '',
     slot: -1,
     muted: false,
+    deafened: false,
     micAvailable: false,
     speaking: false,
     screenStream: null,
@@ -279,7 +280,41 @@ export class RoomManager {
     track.enabled = !track.enabled
     this.local.muted = !track.enabled
     if (this.local.muted) this.local.speaking = false
+    // Se estava ensurdecido e desmutou o microfone, desfaz o ensurdecer
+    if (!this.local.muted && this.local.deafened) {
+      this.local.deafened = false
+    }
     playUiSfx(this.local.muted ? 'mute' : 'unmute')
+    this.broadcastState()
+    this.emit()
+  }
+
+  toggleDeafen(): void {
+    if (this.destroyed) return
+    const nextDeafen = !this.local.deafened
+    this.local.deafened = nextDeafen
+
+    if (nextDeafen) {
+      // Ao ensurdecer: muta também o microfone local
+      const track = this.micStream?.getAudioTracks()[0]
+      if (track && track.enabled) {
+        track.enabled = false
+      }
+      this.local.muted = true
+      this.local.speaking = false
+      playUiSfx('mute')
+    } else {
+      // Ao desensurdecer: desmuta o microfone se disponível
+      if (this.local.micAvailable) {
+        const track = this.micStream?.getAudioTracks()[0]
+        if (track) {
+          track.enabled = true
+          this.local.muted = false
+        }
+      }
+      playUiSfx('unmute')
+    }
+
     this.broadcastState()
     this.emit()
   }

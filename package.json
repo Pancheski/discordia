@@ -2,7 +2,7 @@
   "name": "discordia",
   "productName": "Discordia",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Discordia Desktop App - Voz, Tela, Atividades e Remote Play",
   "author": "Discordia",
   "type": "module",
@@ -40,15 +40,20 @@
       }
     ],
     "win": {
-      "target": [
-        "portable"
-      ]
+      "target": "portable",
+      "icon": "public/icon.ico"
     },
     "portable": {
       "artifactName": "Discordia.exe"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Pancheski",
+      "repo": "discordia"
     }
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "firebase": "^13.1.0",
     "lucide-react": "^1.66.0",
     "peerjs": "^1.5.5",

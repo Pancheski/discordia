@@ -119,6 +119,7 @@ export function useRoom() {
   }, [])
 
   const toggleMute = useCallback(() => managerRef.current?.toggleMute(), [])
+  const toggleDeafen = useCallback(() => managerRef.current?.toggleDeafen(), [])
   const startScreenShare = useCallback(() => void managerRef.current?.startScreenShare(), [])
   const stopScreenShare = useCallback(() => managerRef.current?.stopScreenShare(), [])
   const setVolume = useCallback(
@@ -201,6 +202,7 @@ export function useRoom() {
     join,
     leave,
     toggleMute,
+    toggleDeafen,
     startScreenShare,
     stopScreenShare,
     setVolume,

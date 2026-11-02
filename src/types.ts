@@ -25,6 +25,7 @@ export interface LocalState {
   name: string
   slot: number
   muted: boolean
+  deafened: boolean
   micAvailable: boolean
   speaking: boolean
   screenStream: MediaStream | null
@@ -297,6 +298,11 @@ export interface ChatSnapshot {
   transfers: Record<string, FileTransfer>
 }
 
+export interface KeybindShortcuts {
+  toggleMute: string
+  toggleDeafen: string
+}
+
 export interface ElectronBridge {
   isElectron: boolean
   platform: string
@@ -305,6 +311,13 @@ export interface ElectronBridge {
   minimizeWindow: () => void
   maximizeWindow: () => void
   closeWindow: () => void
+  // Auto-Update
+  restartAndInstallUpdate: () => void
+  onUpdateAvailable: (callback: (info: { version?: string }) => void) => () => void
+  onUpdateDownloaded: (callback: (info: { version?: string }) => void) => () => void
+  // Global Shortcuts
+  registerGlobalShortcuts: (shortcuts: KeybindShortcuts) => void
+  onShortcutTriggered: (callback: (action: 'toggle-mute' | 'toggle-deafen') => void) => () => void
 }
 
 declare global {
