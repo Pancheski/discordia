@@ -1,5 +1,17 @@
-import { Link2, Mic, MicOff, MonitorOff, MonitorUp, PhoneOff, Signal } from 'lucide-react'
+import {
+  AudioWaveform,
+  Link2,
+  MessageSquare,
+  Mic,
+  MicOff,
+  MonitorOff,
+  MonitorUp,
+  PhoneOff,
+  Rocket,
+  Signal,
+} from 'lucide-react'
 import type { ReactNode } from 'react'
+import type { AppActivityId, PeerConnectionState } from '../types'
 
 interface ControlBarProps {
   room: string
@@ -7,8 +19,17 @@ interface ControlBarProps {
   micAvailable: boolean
   sharing: boolean
   screenSupported: boolean
+  chatOpen: boolean
+  unreadCount: number
+  soundboardOpen: boolean
+  appsOpen: boolean
+  activeApp: AppActivityId
+  meshState?: PeerConnectionState
   onToggleMute: () => void
   onToggleScreen: () => void
+  onToggleSoundboard: () => void
+  onToggleApps: () => void
+  onToggleChat: () => void
   onLeave: () => void
   onCopyLink: () => void
 }
@@ -19,51 +40,105 @@ export function ControlBar({
   micAvailable,
   sharing,
   screenSupported,
+  chatOpen,
+  unreadCount,
+  soundboardOpen,
+  appsOpen,
+  activeApp,
+  meshState = 'connected',
   onToggleMute,
   onToggleScreen,
+  onToggleSoundboard,
+  onToggleApps,
+  onToggleChat,
   onLeave,
   onCopyLink,
 }: ControlBarProps) {
-  const micLabel = !micAvailable ? 'Ativar microfone' : muted ? 'Ativar microfone (M)' : 'Silenciar microfone (M)'
+  const micLabel = !micAvailable ? 'Ativar microfone' : muted ? 'Ativar microfone' : 'Silenciar microfone'
+  const appLabel = activeApp
+    ? `Atividades · ${activeApp === 'trio' ? 'TRIO' : activeApp === 'wheel' ? 'Roleta' : 'Mini Golf'}`
+    : 'Atividades'
+
+  const statusText =
+    meshState === 'error'
+      ? 'Erro de conexão'
+      : meshState === 'connecting' || meshState === 'reconnecting'
+        ? 'Conectando...'
+        : 'Voz Conectada'
+  const statusColor =
+    meshState === 'error'
+      ? 'text-dc-red'
+      : meshState === 'connecting' || meshState === 'reconnecting'
+        ? 'text-amber-400'
+        : 'text-dc-green'
 
   return (
-    <footer className="relative flex h-20 shrink-0 items-center justify-between gap-3 border-t border-black/30 bg-dc-darkest/80 px-3 backdrop-blur sm:px-5">
-      <div className="hidden min-w-0 flex-1 items-center gap-2 sm:flex">
-        <Signal size={18} className="shrink-0 text-dc-green" />
+    <footer className="relative flex h-20 shrink-0 items-center justify-between gap-2 border-t border-black/30 bg-dc-darkest/80 px-3 backdrop-blur sm:px-5">
+      <div className="hidden min-w-0 flex-1 items-center gap-2 md:flex">
+        <Signal size={18} className={`shrink-0 ${statusColor}`} />
         <div className="min-w-0 leading-tight">
-          <p className="text-sm font-semibold text-dc-green">Voz conectada</p>
-          <p className="truncate text-xs text-dc-muted">#{room} · P2P</p>
+          <p className={`text-sm font-semibold ${statusColor}`}>{statusText}</p>
+          <p className="truncate text-xs text-dc-muted">#{room}</p>
         </div>
       </div>
 
-      <div className="flex flex-1 items-center justify-center gap-3 sm:flex-none">
+      <div className="flex flex-1 items-center justify-center gap-2 sm:gap-2.5 md:flex-none">
         <ControlButton
           id="mic-toggle-button"
           label={micLabel}
           onClick={onToggleMute}
           variant={muted ? 'danger' : 'neutral'}
-          badge={!micAvailable}
+          badge={!micAvailable ? '!' : undefined}
         >
-          {muted ? <MicOff size={22} /> : <Mic size={22} />}
+          {muted ? <MicOff size={21} /> : <Mic size={21} />}
         </ControlButton>
 
         <ControlButton
           id="screen-toggle-button"
-          label={!screenSupported ? 'Compartilhar tela (indisponível)' : sharing ? 'Parar transmissão' : 'Compartilhar tela'}
+          label={sharing ? 'Parar Transmissão' : 'Compartilhar Tela'}
           onClick={onToggleScreen}
           variant={sharing ? 'active' : 'neutral'}
           dimmed={!screenSupported}
         >
-          {sharing ? <MonitorOff size={22} /> : <MonitorUp size={22} />}
+          {sharing ? <MonitorOff size={21} /> : <MonitorUp size={21} />}
         </ControlButton>
 
-        <ControlButton id="leave-button" label="Sair da sala" onClick={onLeave} variant="leave">
-          <PhoneOff size={22} />
+        <ControlButton
+          id="soundboard-toggle-button"
+          label="Soundboard"
+          onClick={onToggleSoundboard}
+          variant={soundboardOpen ? 'brand' : 'neutral'}
+        >
+          <AudioWaveform size={20} />
+        </ControlButton>
+
+        <ControlButton
+          id="apps-hub-button"
+          label={appLabel}
+          onClick={onToggleApps}
+          variant={appsOpen ? 'brand' : activeApp ? 'active' : 'neutral'}
+          badge={activeApp && !appsOpen ? 'ON' : undefined}
+        >
+          <Rocket size={20} />
+        </ControlButton>
+
+        <ControlButton
+          id="chat-toggle-button"
+          label={chatOpen ? 'Ocultar Chat' : 'Chat'}
+          onClick={onToggleChat}
+          variant={chatOpen ? 'brand' : 'neutral'}
+          badge={unreadCount > 0 ? String(unreadCount > 9 ? '9+' : unreadCount) : undefined}
+        >
+          <MessageSquare size={20} />
+        </ControlButton>
+
+        <ControlButton id="leave-button" label="Desconectar" onClick={onLeave} variant="leave">
+          <PhoneOff size={21} />
         </ControlButton>
       </div>
 
-      <div className="hidden flex-1 justify-end sm:flex">
-        <button id="controlbar-copy-link" type="button" onClick={onCopyLink} className="dc-btn-ghost">
+      <div className="flex items-center justify-end gap-2 md:flex-1">
+        <button id="controlbar-copy-link" type="button" onClick={onCopyLink} className="dc-btn-ghost hidden sm:inline-flex">
           <Link2 size={16} /> Convidar
         </button>
       </div>
@@ -75,8 +150,8 @@ interface ControlButtonProps {
   id: string
   label: string
   onClick: () => void
-  variant: 'neutral' | 'danger' | 'active' | 'leave'
-  badge?: boolean
+  variant: 'neutral' | 'danger' | 'active' | 'brand' | 'leave'
+  badge?: string
   dimmed?: boolean
   children: ReactNode
 }
@@ -85,6 +160,7 @@ const VARIANTS: Record<ControlButtonProps['variant'], string> = {
   neutral: 'bg-dc-light text-dc-text hover:bg-dc-hover',
   danger: 'bg-dc-red/15 text-dc-red ring-1 ring-dc-red/40 hover:bg-dc-red/25',
   active: 'bg-dc-green text-white hover:bg-[#1f8b4c] shadow-lg shadow-dc-green/25',
+  brand: 'bg-dc-brand text-white hover:bg-dc-brand-hover shadow-lg shadow-dc-brand/25',
   leave: 'bg-dc-red text-white hover:bg-dc-red-hover shadow-lg shadow-dc-red/25',
 }
 
@@ -96,14 +172,14 @@ function ControlButton({ id, label, onClick, variant, badge, dimmed, children }:
         type="button"
         onClick={onClick}
         aria-label={label}
-        className={`relative flex h-12 w-12 items-center justify-center rounded-full transition-all duration-150 hover:-translate-y-0.5 active:translate-y-0 active:scale-95 sm:h-[52px] sm:w-[52px] ${
-          variant === 'leave' ? 'sm:w-16' : ''
+        className={`relative flex h-11 w-11 items-center justify-center rounded-full transition-all duration-150 hover:-translate-y-0.5 active:translate-y-0 active:scale-95 sm:h-12 sm:w-12 ${
+          variant === 'leave' ? 'sm:w-15' : ''
         } ${VARIANTS[variant]} ${dimmed ? 'opacity-50' : ''}`}
       >
         {children}
         {badge && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-dc-yellow text-[10px] font-black text-black ring-2 ring-dc-darkest">
-            !
+          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-dc-yellow px-1 text-[9px] font-black text-black ring-2 ring-dc-darkest">
+            {badge}
           </span>
         )}
       </button>

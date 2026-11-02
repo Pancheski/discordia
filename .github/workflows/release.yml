@@ -1,0 +1,78 @@
+name: Build & Release Discordia (.exe)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag da versão para publicar no GitHub Releases (ex: v1.0.0)'
+        required: false
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows Portable (.exe)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Configurar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Instalar dependências Python e compilar motor ViGEmBus (DiscordiaHost.exe)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip pyinstaller websockets vgamepad pystray pillow
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          python -m PyInstaller --noconsole --onefile --clean --distpath "release" --workpath "build/pyinstaller" --name "DiscordiaHost" --collect-all vgamepad --collect-all pystray discordia_companion.py
+
+      - name: Instalar dependências Node.js
+        run: npm ci
+
+      - name: Compilar aplicativo Desktop (Discordia.exe)
+        env:
+          VITE_METERED_DOMAIN: ${{ secrets.VITE_METERED_DOMAIN }}
+          VITE_METERED_API_KEY: ${{ secrets.VITE_METERED_API_KEY }}
+          VITE_PRESENCE_PROVIDER: ${{ secrets.VITE_PRESENCE_PROVIDER }}
+          VITE_FIREBASE_DATABASE_URL: ${{ secrets.VITE_FIREBASE_DATABASE_URL }}
+          VITE_PRESENCE_ROOT: ${{ secrets.VITE_PRESENCE_ROOT }}
+        run: npm run build:exe
+
+      - name: Verificar artefato gerado (release/Discordia.exe)
+        shell: pwsh
+        run: |
+          if (!(Test-Path "release/Discordia.exe")) {
+            Write-Error "release/Discordia.exe não foi encontrado após o build!"
+            exit 1
+          }
+          Get-Item "release/Discordia.exe" | Select-Object FullName, Length
+
+      - name: Publicar Release no GitHub com Discordia.exe
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name || 'v1.0.0' }}
+          name: Discordia ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name || 'v1.0.0' }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            release/Discordia.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

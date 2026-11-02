@@ -43,7 +43,12 @@ export async function getIceServers(): Promise<RTCIceServer[]> {
           return cachedIceServers
         }
       } else {
-        console.warn('[discordia] Falha ao consultar API Metered.ca:', response.statusText)
+        console.warn(
+          `[discordia] Falha ao consultar API Metered.ca (${response.status}):`,
+          meteredApiKey.startsWith('sk_secret_')
+            ? 'Você informou uma Secret Key (sk_secret_...). Para o frontend, copie a "API Key" da aba TURN -> Instructions no painel da Metered.ca.'
+            : response.statusText,
+        )
       }
     } catch (err) {
       console.warn('[discordia] Erro ao buscar credenciais TURN da Metered:', err)

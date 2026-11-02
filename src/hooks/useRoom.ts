@@ -1,13 +1,49 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { RoomManager } from '../lib/RoomManager'
-import type { MediaKind, RoomSnapshot, Toast, ToastKind } from '../types'
+import type {
+  AppActivityId,
+  ChatSnapshot,
+  GamepadStatePayload,
+  GolfResetEvent,
+  GolfStrokeEvent,
+  MediaKind,
+  RemotePlayGrant,
+  RoomSnapshot,
+  RpsChoice,
+  RpsDuelState,
+  Toast,
+  ToastKind,
+  TrioAction,
+  TrioGameState,
+  WheelState,
+} from '../types'
 
 const TOAST_TTL_MS = 5000
+const EMPTY_CHAT: ChatSnapshot = { messages: [], transfers: {} }
+const INITIAL_WHEEL: WheelState = {
+  options: ['Pizza 🍕', 'Hambúrguer 🍔', 'Sushi 🍣', 'Tacos 🌮'],
+  lastSpin: null,
+}
+const IS_ELECTRON = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
+
+const INITIAL_REMOTE_PLAY: { grant: RemotePlayGrant | null; companionConnected: boolean } = {
+  grant: null,
+  companionConnected: IS_ELECTRON,
+}
+
 
 export function useRoom() {
   const managerRef = useRef<RoomManager | null>(null)
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
+  const [chat, setChat] = useState<ChatSnapshot>(EMPTY_CHAT)
+  const [rpsDuel, setRpsDuel] = useState<RpsDuelState | null>(null)
+  const [trioState, setTrioState] = useState<TrioGameState | null>(null)
+  const [activeApp, setActiveApp] = useState<AppActivityId>(null)
+  const [wheelState, setWheelState] = useState<WheelState>(INITIAL_WHEEL)
+  const [lastGolfStroke, setLastGolfStroke] = useState<GolfStrokeEvent | null>(null)
+  const [lastGolfReset, setLastGolfReset] = useState<GolfResetEvent | null>(null)
+  const [remotePlay, setRemotePlay] = useState(INITIAL_REMOTE_PLAY)
   const toastIdRef = useRef(0)
   const toastTimers = useRef(new Map<number, number>())
 
@@ -36,7 +72,26 @@ export function useRoom() {
   const join = useCallback(
     async (name: string, room: string): Promise<boolean> => {
       if (managerRef.current) return true
-      const manager = new RoomManager({ onChange: setSnapshot, onToast: pushToast })
+      setChat(EMPTY_CHAT)
+      setRpsDuel(null)
+      setTrioState(null)
+      setActiveApp(null)
+      setWheelState(INITIAL_WHEEL)
+      setLastGolfStroke(null)
+      setLastGolfReset(null)
+      setRemotePlay(INITIAL_REMOTE_PLAY)
+      const manager = new RoomManager({
+        onChange: setSnapshot,
+        onToast: pushToast,
+        onChat: setChat,
+        onRpsChange: setRpsDuel,
+        onTrioChange: setTrioState,
+        onActiveAppChange: setActiveApp,
+        onWheelChange: setWheelState,
+        onGolfStroke: setLastGolfStroke,
+        onGolfReset: setLastGolfReset,
+        onRemotePlayChange: setRemotePlay,
+      })
       managerRef.current = manager
       const ok = await manager.join(name, room)
       if (!ok) {
@@ -53,6 +108,14 @@ export function useRoom() {
     managerRef.current?.leave()
     managerRef.current = null
     setSnapshot(null)
+    setChat(EMPTY_CHAT)
+    setRpsDuel(null)
+    setTrioState(null)
+    setActiveApp(null)
+    setWheelState(INITIAL_WHEEL)
+    setLastGolfStroke(null)
+    setLastGolfReset(null)
+    setRemotePlay(INITIAL_REMOTE_PLAY)
   }, [])
 
   const toggleMute = useCallback(() => managerRef.current?.toggleMute(), [])
@@ -60,6 +123,62 @@ export function useRoom() {
   const stopScreenShare = useCallback(() => managerRef.current?.stopScreenShare(), [])
   const setVolume = useCallback(
     (peerId: string, kind: MediaKind, value: number) => managerRef.current?.setParticipantVolume(peerId, kind, value),
+    [],
+  )
+
+  // Chat + arquivos P2P (DataChannel)
+  const sendChat = useCallback((text: string) => managerRef.current?.sendChat(text) ?? false, [])
+  const sendFiles = useCallback((files: Iterable<File>) => managerRef.current?.sendFiles(files), [])
+  const cancelTransfer = useCallback((id: string) => managerRef.current?.cancelTransfer(id), [])
+  const saveTransfer = useCallback((id: string) => managerRef.current?.saveTransfer(id), [])
+
+  // Soundboard P2P
+  const playSfx = useCallback(
+    (sfxId: string, custom?: { name: string; dataUrl: string }) => managerRef.current?.playSfx(sfxId, custom),
+    [],
+  )
+
+  // Duelo 1v1: Pedra, Papel e Tesoura
+  const challengeRps = useCallback((peerId: string) => managerRef.current?.challengeRps(peerId), [])
+  const acceptRps = useCallback(() => managerRef.current?.acceptRps(), [])
+  const declineRps = useCallback(() => managerRef.current?.declineRps(), [])
+  const chooseRps = useCallback((choice: RpsChoice) => managerRef.current?.chooseRps(choice), [])
+  const rematchRps = useCallback(() => managerRef.current?.rematchRps(), [])
+  const closeRps = useCallback(() => managerRef.current?.closeRps(), [])
+
+  // Minigame de Sala: Jogo de Cartas TRIO
+  const startTrioGame = useCallback(() => managerRef.current?.startTrioGame(), [])
+  const sendTrioAction = useCallback((action: TrioAction) => managerRef.current?.sendTrioAction(action), [])
+  const endTrioGame = useCallback(() => managerRef.current?.endTrioGame(), [])
+
+  // Hub de Atividades P2P (Apps / Roleta 3D / Mini Golf 3D)
+  const launchApp = useCallback((appId: AppActivityId) => managerRef.current?.launchApp(appId), [])
+  const updateWheelOptions = useCallback(
+    (options: string[]) => managerRef.current?.updateWheelOptions(options),
+    [],
+  )
+  const spinWheel = useCallback(
+    (winnerIndex: number, targetAngle: number, options: string[]) =>
+      managerRef.current?.spinWheel(winnerIndex, targetAngle, options),
+    [],
+  )
+  const sendGolfStroke = useCallback(
+    (vx: number, vz: number) => managerRef.current?.sendGolfStroke(vx, vz),
+    [],
+  )
+  const sendGolfReset = useCallback(() => managerRef.current?.sendGolfReset(), [])
+
+  // Remote Play / Jogar Junto (Gamepad API -> WebRTC -> ViGEmBus)
+  const grantRemotePlay = useCallback(
+    (guestId: string | null) => managerRef.current?.grantRemotePlay(guestId),
+    [],
+  )
+  const sendGamepadState = useCallback(
+    (payload: GamepadStatePayload) => managerRef.current?.sendGamepadState(payload),
+    [],
+  )
+  const connectCompanionBridge = useCallback(
+    () => managerRef.current?.connectCompanionBridge(),
     [],
   )
 
@@ -85,6 +204,36 @@ export function useRoom() {
     startScreenShare,
     stopScreenShare,
     setVolume,
+    chat,
+    sendChat,
+    sendFiles,
+    cancelTransfer,
+    saveTransfer,
+    playSfx,
+    rpsDuel,
+    challengeRps,
+    acceptRps,
+    declineRps,
+    chooseRps,
+    rematchRps,
+    closeRps,
+    trioState,
+    startTrioGame,
+    sendTrioAction,
+    endTrioGame,
+    activeApp,
+    wheelState,
+    lastGolfStroke,
+    lastGolfReset,
+    launchApp,
+    updateWheelOptions,
+    spinWheel,
+    sendGolfStroke,
+    sendGolfReset,
+    remotePlay,
+    grantRemotePlay,
+    sendGamepadState,
+    connectCompanionBridge,
   }
 }
 

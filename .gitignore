@@ -7,10 +7,26 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies & Build Outputs
 node_modules
 dist
 dist-ssr
+dist-electron
+release
+build
 *.local
+
+# Executables & Archives (Desktop / Companion)
+*.exe
+*.zip
+*.tar.gz
+*.spec
+
+# Python / PyInstaller
+__pycache__/
+*.pyc
+.venv/
+venv/
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +38,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Vercel & Secrets
+.vercel
+.env
+.env.*
+!.env.example
+*serviceAccount*.json
+*firebase-adminsdk*.json

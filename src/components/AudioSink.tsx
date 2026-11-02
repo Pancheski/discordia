@@ -4,6 +4,9 @@ import { clamp } from '../lib/utils'
 interface AudioSinkProps {
   stream: MediaStream
   volume: number
+  unlockSignal?: number
+  onAutoplayBlocked?: () => void
+  onAutoplayResolved?: () => void
 }
 
 /**
@@ -11,7 +14,13 @@ interface AudioSinkProps {
  * Não usa display:none nem o atributo hidden para evitar que o navegador aplique
  * economia de energia ou despriorize a thread de áudio em segundo plano.
  */
-export function AudioSink({ stream, volume }: AudioSinkProps) {
+export function AudioSink({
+  stream,
+  volume,
+  unlockSignal = 0,
+  onAutoplayBlocked,
+  onAutoplayResolved,
+}: AudioSinkProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
 
   useEffect(() => {
@@ -27,20 +36,44 @@ export function AudioSink({ stream, volume }: AudioSinkProps) {
     el.muted = clamped === 0
 
     const playAudio = () => {
-      el.play().catch((err: unknown) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return
-        console.debug('[discordia] áudio aguardando interação:', err)
-      })
+      if (el.srcObject !== stream) {
+        el.srcObject = stream
+      }
+      el.play()
+        .then(() => {
+          onAutoplayResolved?.()
+        })
+        .catch((err: unknown) => {
+          if (err instanceof DOMException && err.name === 'AbortError') return
+          console.debug('[discordia] áudio aguardando interação:', err)
+          onAutoplayBlocked?.()
+        })
     }
 
     playAudio()
 
+    const tracks = stream.getAudioTracks()
+    stream.addEventListener('addtrack', playAudio)
+    for (const track of tracks) {
+      track.addEventListener('unmute', playAudio)
+    }
+
+    const onUserGesture = () => playAudio()
+    window.addEventListener('pointerdown', onUserGesture, { once: true })
+    window.addEventListener('keydown', onUserGesture, { once: true })
+
     return () => {
+      stream.removeEventListener('addtrack', playAudio)
+      for (const track of tracks) {
+        track.removeEventListener('unmute', playAudio)
+      }
+      window.removeEventListener('pointerdown', onUserGesture)
+      window.removeEventListener('keydown', onUserGesture)
       if (el.srcObject === stream) {
         el.srcObject = null
       }
     }
-  }, [stream, volume])
+  }, [stream, volume, unlockSignal, onAutoplayBlocked, onAutoplayResolved])
 
   return (
     <audio

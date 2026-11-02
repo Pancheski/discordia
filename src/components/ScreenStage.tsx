@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Maximize2, Minimize2, MonitorUp, VolumeX } from 'lucide-react'
+import { EyeOff, Gamepad2, Maximize2, Minimize2, MonitorUp, VolumeX } from 'lucide-react'
 import { useMediaStream } from '../hooks/useMediaStream'
 import { VolumeSlider } from './VolumeSlider'
 
@@ -15,12 +15,17 @@ export interface ScreenSource {
 interface ScreenStageProps {
   screen: ScreenSource
   onVolumeChange: (value: number) => void
+  onStopWatching?: () => void
+  onOpenRemotePlay?: () => void
 }
 
-/** Área de destaque da transmissão de tela, com tela cheia e controle de volume. */
-export function ScreenStage({ screen, onVolumeChange }: ScreenStageProps) {
+export function ScreenStage({
+  screen,
+  onVolumeChange,
+  onStopWatching,
+  onOpenRemotePlay,
+}: ScreenStageProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  // O vídeo é sempre mudo: o áudio da tela toca via <AudioSink>, independente do foco.
   const videoRef = useMediaStream<HTMLVideoElement>(screen.stream)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [resolution, setResolution] = useState('')
@@ -54,7 +59,6 @@ export function ScreenStage({ screen, onVolumeChange }: ScreenStageProps) {
       } else if (el.requestFullscreen) {
         await el.requestFullscreen({ navigationUI: 'hide' })
       } else {
-        // iOS Safari: só permite tela cheia no próprio <video>
         const video = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null
         video?.webkitEnterFullscreen?.()
       }
@@ -72,26 +76,51 @@ export function ScreenStage({ screen, onVolumeChange }: ScreenStageProps) {
       <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
 
       {/* Barra superior */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 bg-gradient-to-b from-black/70 to-transparent p-3 opacity-100 transition-opacity duration-300 sm:opacity-0 sm:group-hover:opacity-100">
+      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 bg-gradient-to-b from-black/75 to-transparent p-3 opacity-100 transition-opacity duration-300">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="flex items-center gap-1.5 rounded bg-dc-red px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
-            <span className="h-1.5 w-1.5 animate-live rounded-full bg-white" /> Ao vivo
+          <span className="flex items-center gap-1.5 rounded bg-dc-red px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
+            <span className="h-1.5 w-1.5 animate-live rounded-full bg-white" /> AO VIVO
           </span>
           <span className="truncate text-sm font-semibold text-white drop-shadow">
             {screen.isLocal ? 'Sua transmissão' : screen.name}
           </span>
           {resolution && <span className="hidden text-xs text-white/60 sm:inline">{resolution}</span>}
         </div>
-        <button
-          id="fullscreen-button"
-          type="button"
-          onClick={toggleFullscreen}
-          className="pointer-events-auto rounded-md bg-black/50 p-2 text-white backdrop-blur transition hover:bg-black/80"
-          title={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
-          aria-label={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
-        >
-          {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-        </button>
+        <div className="flex items-center gap-2">
+          {onOpenRemotePlay && (
+            <button
+              type="button"
+              onClick={onOpenRemotePlay}
+              className="pointer-events-auto inline-flex items-center gap-1.5 rounded-md border border-emerald-400/35 bg-emerald-600/80 px-2.5 py-1.5 text-xs font-bold text-white backdrop-blur transition hover:bg-emerald-500"
+              title="Liberar Controle (Remote Play)"
+            >
+              <Gamepad2 size={14} />
+              <span className="hidden md:inline">Liberar Controle</span>
+            </button>
+          )}
+          {onStopWatching && (
+            <button
+              type="button"
+              onClick={onStopWatching}
+              className="pointer-events-auto inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-black/65 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur transition hover:bg-dc-red hover:border-dc-red"
+              title="Parar de assistir"
+            >
+              <EyeOff size={14} />
+              <span>Parar de Assistir</span>
+            </button>
+          )}
+          <button
+            id="fullscreen-button"
+            type="button"
+            onClick={toggleFullscreen}
+            className="pointer-events-auto inline-flex items-center gap-1.5 rounded-md bg-black/65 px-2.5 py-1.5 text-xs font-semibold text-white backdrop-blur transition hover:bg-black/85"
+            title={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+            aria-label={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+          >
+            {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+            <span className="hidden sm:inline">{isFullscreen ? 'Sair da Tela Cheia' : 'Tela Cheia'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Barra inferior */}
@@ -99,7 +128,7 @@ export function ScreenStage({ screen, onVolumeChange }: ScreenStageProps) {
         {screen.isLocal ? (
           <span className="flex items-center gap-1.5 text-xs text-white/75">
             <MonitorUp size={14} />
-            Pré-visualização (sem áudio local){!screen.hasAudio && ' · transmitindo sem som'}
+            Sua tela{!screen.hasAudio && ' · sem áudio'}
           </span>
         ) : screen.hasAudio ? (
           <div className="pointer-events-auto w-56 rounded-md bg-black/55 px-2 py-1 backdrop-blur">
@@ -112,7 +141,7 @@ export function ScreenStage({ screen, onVolumeChange }: ScreenStageProps) {
           </div>
         ) : (
           <span className="flex items-center gap-1.5 text-xs text-white/75">
-            <VolumeX size={14} /> Transmissão sem áudio
+            <VolumeX size={14} /> Sem áudio
           </span>
         )}
       </div>

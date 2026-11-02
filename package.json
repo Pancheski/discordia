@@ -1,26 +1,70 @@
 {
   "name": "discordia",
+  "productName": "Discordia",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Discordia Desktop App - Voz, Tela, Atividades e Remote Play",
+  "author": "Discordia",
   "type": "module",
+  "main": "dist-electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:electron": "node scripts/build-electron.mjs",
+    "electron:start": "npm run build && npm run build:electron && electron .",
+    "build:exe": "npm run build && npm run build:electron && electron-builder --win portable",
     "lint": "oxlint",
     "preview": "vite preview"
   },
+  "build": {
+    "appId": "com.discordia.desktop",
+    "productName": "Discordia",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "discordia_companion.py",
+        "to": "discordia_companion.py"
+      },
+      {
+        "from": "release",
+        "to": ".",
+        "filter": [
+          "DiscordiaHost.exe"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "Discordia.exe"
+    }
+  },
   "dependencies": {
+    "firebase": "^13.1.0",
     "lucide-react": "^1.66.0",
     "peerjs": "^1.5.5",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "three": "^0.187.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.187.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^45.2.1",
+    "electron-builder": "^26.18.0",
     "oxlint": "^1.89.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~7.0.2",

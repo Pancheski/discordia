@@ -1,0 +1,13 @@
+dist/
+dist-electron/
+release/
+build/
+*.exe
+*.zip
+*.tar.gz
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+
