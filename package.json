@@ -2,7 +2,7 @@
   "name": "discordia",
   "productName": "Discordia",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Discordia Desktop App - Voz, Tela, Atividades e Remote Play",
   "author": "Discordia",
   "type": "module",
@@ -12,7 +12,7 @@
     "build": "tsc -b && vite build",
     "build:electron": "node scripts/build-electron.mjs",
     "electron:start": "npm run build && npm run build:electron && electron .",
-    "build:exe": "npm run build && npm run build:electron && electron-builder --win portable --publish never",
+    "build:exe": "npm run build && npm run build:electron && electron-builder --win nsis --publish never",
     "lint": "oxlint",
     "preview": "vite preview"
   },
@@ -40,11 +40,17 @@
       }
     ],
     "win": {
-      "target": "portable",
+      "target": [
+        "nsis"
+      ],
       "icon": "public/icon.ico"
     },
-    "portable": {
-      "artifactName": "Discordia.exe"
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "Discordia-Setup.${ext}"
     },
     "publish": {
       "provider": "github",

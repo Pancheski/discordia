@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows Portable (.exe)
+    name: Build Windows Installer (NSIS)
     runs-on: windows-latest
     timeout-minutes: 15
 
@@ -49,7 +49,7 @@ jobs:
       - name: Instalar dependências Node.js
         run: npm ci
 
-      - name: Compilar aplicativo Desktop (Discordia.exe)
+      - name: Compilar instalador Desktop (Discordia-Setup.exe)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -60,18 +60,19 @@ jobs:
           VITE_PRESENCE_ROOT: ${{ secrets.VITE_PRESENCE_ROOT }}
         run: npm run build:exe
 
-      - name: Verificar artefato gerado e compactar em .zip
+      - name: Verificar artefatos gerados e compactar em .zip
         shell: pwsh
         run: |
-          if (!(Test-Path "release/Discordia.exe")) {
-            Write-Error "release/Discordia.exe não foi encontrado após o build!"
+          if (!(Test-Path "release/Discordia-Setup.exe")) {
+            Write-Error "release/Discordia-Setup.exe não foi encontrado após o build!"
             exit 1
           }
-          Get-Item "release/Discordia.exe" | Select-Object FullName, Length
-          Compress-Archive -Path "release/Discordia.exe" -DestinationPath "release/Discordia-Windows.zip" -Force
+          Get-Item "release/Discordia-Setup.exe" | Select-Object FullName, Length
+          Copy-Item "release/Discordia-Setup.exe" "release/Discordia.exe" -Force
+          Compress-Archive -Path "release/Discordia-Setup.exe" -DestinationPath "release/Discordia-Windows.zip" -Force
           Get-Item "release/Discordia-Windows.zip" | Select-Object FullName, Length
 
-      - name: Publicar Release no GitHub (Discordia.exe e Discordia-Windows.zip)
+      - name: Publicar Release no GitHub (Discordia-Setup.exe e Discordia-Windows.zip)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name || 'v1.0.0' }}
@@ -80,6 +81,7 @@ jobs:
           draft: false
           prerelease: false
           files: |
+            release/Discordia-Setup.exe
             release/Discordia.exe
             release/Discordia-Windows.zip
         env:

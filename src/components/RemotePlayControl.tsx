@@ -37,7 +37,7 @@ const BUTTON_BADGES: { index: number; label: string; color: string }[] = [
 
 const HOST_EXE_URL =
   (import.meta.env.VITE_HOST_EXE_URL as string | undefined)?.trim() ||
-  'https://github.com/Pancheski/discordia/releases/latest/download/Discordia.exe'
+  'https://github.com/Pancheski/discordia/releases/latest/download/Discordia-Setup.exe'
 
 export function RemotePlayControl({
   localPeerId,
