@@ -1,0 +1,6 @@
+pyinstaller
+websockets
+vgamepad
+pystray
+pillow
+
