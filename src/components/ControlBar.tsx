@@ -1,5 +1,6 @@
 import {
   AudioWaveform,
+  Film,
   Headphones,
   Link2,
   MessageSquare,
@@ -12,9 +13,10 @@ import {
   Settings,
   Signal,
   VolumeX,
+  Zap,
 } from 'lucide-react'
-import type { ReactNode } from 'react'
-import type { AppActivityId, PeerConnectionState } from '../types'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import type { AppActivityId, PeerConnectionState, ScreenSharePreset } from '../types'
 
 interface ControlBarProps {
   room: string
@@ -23,6 +25,8 @@ interface ControlBarProps {
   micAvailable: boolean
   sharing: boolean
   screenSupported: boolean
+  screenPreset?: ScreenSharePreset
+  isRemotePlayActive?: boolean
   chatOpen: boolean
   unreadCount: number
   soundboardOpen: boolean
@@ -32,6 +36,8 @@ interface ControlBarProps {
   onToggleMute: () => void
   onToggleDeafen: () => void
   onToggleScreen: () => void
+  onStartScreenShare?: (preset: ScreenSharePreset) => void
+  onTogglePreset?: () => void
   onToggleSoundboard: () => void
   onToggleApps: () => void
   onToggleChat: () => void
@@ -47,6 +53,8 @@ export function ControlBar({
   micAvailable,
   sharing,
   screenSupported,
+  screenPreset = 'quality',
+  isRemotePlayActive = false,
   chatOpen,
   unreadCount,
   soundboardOpen,
@@ -56,6 +64,8 @@ export function ControlBar({
   onToggleMute,
   onToggleDeafen,
   onToggleScreen,
+  onStartScreenShare,
+  onTogglePreset,
   onToggleSoundboard,
   onToggleApps,
   onToggleChat,
@@ -63,6 +73,19 @@ export function ControlBar({
   onLeave,
   onCopyLink,
 }: ControlBarProps) {
+  const [screenMenuOpen, setScreenMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!screenMenuOpen) return
+    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setScreenMenuOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', handleClickOutside)
+    return () => document.removeEventListener('pointerdown', handleClickOutside)
+  }, [screenMenuOpen])
   const micLabel = !micAvailable ? 'Ativar microfone' : muted ? 'Ativar microfone' : 'Silenciar microfone'
   const deafenLabel = deafened ? 'Desativar ensurdecer' : 'Ensurdecer'
   const appLabel = activeApp
@@ -112,15 +135,115 @@ export function ControlBar({
           {deafened ? <VolumeX size={21} /> : <Headphones size={21} />}
         </ControlButton>
 
-        <ControlButton
-          id="screen-toggle-button"
-          label={sharing ? 'Parar Transmissão' : 'Compartilhar Tela'}
-          onClick={onToggleScreen}
-          variant={sharing ? 'active' : 'neutral'}
-          dimmed={!screenSupported}
-        >
-          {sharing ? <MonitorOff size={21} /> : <MonitorUp size={21} />}
-        </ControlButton>
+        <div className="relative inline-flex items-center">
+          <ControlButton
+            id="screen-toggle-button"
+            label={sharing ? 'Parar Transmissão' : 'Compartilhar Tela'}
+            onClick={() => {
+              if (sharing) {
+                onToggleScreen()
+              } else {
+                setScreenMenuOpen((o) => !o)
+              }
+            }}
+            variant={sharing ? 'active' : 'neutral'}
+            dimmed={!screenSupported}
+          >
+            {sharing ? <MonitorOff size={21} /> : <MonitorUp size={21} />}
+          </ControlButton>
+
+          {sharing && onTogglePreset && (
+            <button
+              type="button"
+              onClick={onTogglePreset}
+              className={`absolute -top-2.5 -right-2.5 flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold shadow-md ring-1 ring-black/40 transition ${
+                screenPreset === 'game'
+                  ? 'bg-amber-400 text-black hover:bg-amber-300'
+                  : 'bg-dc-brand text-white hover:bg-dc-brand/90'
+              }`}
+              title={`Alternar qualidade (atual: ${screenPreset === 'game' ? '720p 60 FPS • Latência Zero' : '1080p 60 FPS'})`}
+            >
+              {screenPreset === 'game' ? <Zap size={10} className="fill-black" /> : <Film size={10} />}
+              <span>{screenPreset === 'game' ? '720p' : '1080p'}</span>
+            </button>
+          )}
+
+          {screenMenuOpen && !sharing && (
+            <div
+              ref={menuRef}
+              className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 w-72 rounded-xl border border-white/10 bg-dc-darkest/95 p-2 shadow-2xl backdrop-blur z-50 text-left animate-in fade-in"
+            >
+              <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-dc-muted">
+                Qualidade da Transmissão
+              </div>
+              <div className="mt-1 flex flex-col gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setScreenMenuOpen(false)
+                    if (onStartScreenShare) {
+                      onStartScreenShare('game')
+                    } else {
+                      onToggleScreen()
+                    }
+                  }}
+                  className={`flex items-start gap-2.5 rounded-lg p-2 transition text-left ${
+                    isRemotePlayActive || screenPreset === 'game'
+                      ? 'bg-amber-500/15 border border-amber-500/30 text-amber-200'
+                      : 'hover:bg-white/5 text-white/90'
+                  }`}
+                >
+                  <div className="mt-0.5 rounded bg-amber-500/20 p-1.5 text-amber-400">
+                    <Zap size={16} className="fill-amber-400" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 font-bold text-xs">
+                      <span>⚡ Modo Jogo (720p)</span>
+                      <span className="rounded bg-amber-400 px-1 py-0.2 text-[9px] font-black text-black">
+                        60 FPS
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-white/60 leading-tight mt-0.5">
+                      Latência Zero. Padrão para Remote Play e jogos rápidos.
+                    </p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setScreenMenuOpen(false)
+                    if (onStartScreenShare) {
+                      onStartScreenShare('quality')
+                    } else {
+                      onToggleScreen()
+                    }
+                  }}
+                  className={`flex items-start gap-2.5 rounded-lg p-2 transition text-left ${
+                    !isRemotePlayActive && screenPreset === 'quality'
+                      ? 'bg-dc-brand/20 border border-dc-brand/40 text-indigo-200'
+                      : 'hover:bg-white/5 text-white/90'
+                  }`}
+                >
+                  <div className="mt-0.5 rounded bg-dc-brand/20 p-1.5 text-dc-brand">
+                    <Film size={16} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 font-bold text-xs">
+                      <span>🎬 Alta Qualidade (1080p)</span>
+                      <span className="rounded bg-dc-brand px-1 py-0.2 text-[9px] font-black text-white">
+                        60 FPS
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-white/60 leading-tight mt-0.5">
+                      Nitidez máxima para vídeos, filmes e tela.
+                    </p>
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
 
         <ControlButton
           id="soundboard-toggle-button"

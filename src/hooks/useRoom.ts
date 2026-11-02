@@ -11,6 +11,7 @@ import type {
   RoomSnapshot,
   RpsChoice,
   RpsDuelState,
+  ScreenSharePreset,
   Toast,
   ToastKind,
   TrioAction,
@@ -120,8 +121,15 @@ export function useRoom() {
 
   const toggleMute = useCallback(() => managerRef.current?.toggleMute(), [])
   const toggleDeafen = useCallback(() => managerRef.current?.toggleDeafen(), [])
-  const startScreenShare = useCallback(() => void managerRef.current?.startScreenShare(), [])
+  const startScreenShare = useCallback(
+    (preset?: ScreenSharePreset) => void managerRef.current?.startScreenShare(preset),
+    [],
+  )
   const stopScreenShare = useCallback(() => managerRef.current?.stopScreenShare(), [])
+  const setScreenPreset = useCallback(
+    (preset: ScreenSharePreset) => void managerRef.current?.setScreenPreset(preset),
+    [],
+  )
   const setVolume = useCallback(
     (peerId: string, kind: MediaKind, value: number) => managerRef.current?.setParticipantVolume(peerId, kind, value),
     [],
@@ -205,6 +213,7 @@ export function useRoom() {
     toggleDeafen,
     startScreenShare,
     stopScreenShare,
+    setScreenPreset,
     setVolume,
     chat,
     sendChat,

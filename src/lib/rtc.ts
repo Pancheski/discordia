@@ -122,6 +122,87 @@ export function tuneScreenSdp(sdp: string): string {
 }
 
 /**
+ * Configura os parâmetros de codificação da track de vídeo da tela:
+ * - Modo Jogo (720p 60 FPS • Latência Zero):
+ *   degradationPreference: 'maintain-framerate'
+ *   encodings[0].maxBitrate = 4000000 (4 Mbps para evitar filas de rede)
+ *   encodings[0].maxFramerate = 60
+ *   encodings[0].priority = 'high'
+ *   encodings[0].networkPriority = 'high'
+ *
+ * - Alta Qualidade (1080p 60 FPS):
+ *   degradationPreference: 'maintain-resolution'
+ *   encodings[0].maxBitrate = 12000000 (12 Mbps)
+ *   encodings[0].maxFramerate = 60
+ *   encodings[0].priority = 'high'
+ *   encodings[0].networkPriority = 'high'
+ */
+export async function tuneScreenSender(
+  pc: RTCPeerConnection,
+  preset: 'game' | 'quality' = 'quality',
+): Promise<void> {
+  for (const sender of pc.getSenders()) {
+    const track = sender.track
+    if (!track) continue
+
+    const params = sender.getParameters() as ExtendedSendParameters
+    if (!params.encodings || params.encodings.length === 0) {
+      params.encodings = [{}]
+    }
+    const enc = params.encodings[0] as ExtendedEncoding
+
+    if (track.kind === 'video') {
+      enc.scaleResolutionDownBy = 1.0
+      enc.maxFramerate = 60
+      enc.priority = 'high'
+      enc.networkPriority = 'high'
+
+      if (preset === 'game') {
+        enc.maxBitrate = 4_000_000 // 4 Mbps para evitar buffer na rede
+        delete enc.minBitrate
+        params.degradationPreference = 'maintain-framerate'
+      } else {
+        enc.maxBitrate = 12_000_000 // 12 Mbps
+        enc.minBitrate = 2_500_000
+        params.degradationPreference = 'maintain-resolution'
+      }
+
+      try {
+        await sender.setParameters(params)
+      } catch (err) {
+        console.debug('[discordia] setParameters screen video:', err)
+      }
+    } else if (track.kind === 'audio') {
+      enc.priority = 'high'
+      enc.networkPriority = 'high'
+      try {
+        await sender.setParameters(params)
+      } catch (err) {
+        console.debug('[discordia] setParameters screen audio:', err)
+      }
+    }
+  }
+}
+
+/**
+ * Zera o jitter buffer nos receptores Chromium para resposta em tempo real imediata.
+ */
+export function tuneReceiversZeroLatency(pc: RTCPeerConnection): void {
+  for (const receiver of pc.getReceivers()) {
+    try {
+      if ('playoutDelayHint' in receiver) {
+        ;(receiver as unknown as { playoutDelayHint: number }).playoutDelayHint = 0
+      }
+      if ('jitterBufferTarget' in receiver) {
+        ;(receiver as unknown as { jitterBufferTarget: number }).jitterBufferTarget = 0
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
  * Aplica parâmetros avançados de bitrate, framerate e preservação de resolução
  * diretamente nos senders da RTCPeerConnection.
  */

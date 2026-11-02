@@ -33,6 +33,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     toggleDeafen,
     startScreenShare,
     stopScreenShare,
+    setScreenPreset,
     leave,
     setVolume,
     pushToast,
@@ -541,6 +542,8 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                   <ScreenStage
                     key={watchedScreen.id}
                     screen={watchedScreen}
+                    screenPreset={local.screenPreset}
+                    onPresetChange={setScreenPreset}
                     onVolumeChange={(v) => !watchedScreen.isLocal && setVolume(watchedScreen.id, 'screen', v)}
                     onStopWatching={handleStopWatchingScreen}
                     onOpenRemotePlay={() => {
@@ -670,6 +673,11 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           micAvailable={local.micAvailable}
           sharing={!!local.screenStream}
           screenSupported={screenSupported}
+          screenPreset={local.screenPreset}
+          isRemotePlayActive={Boolean(
+            (remotePlay.grant?.hostId === local.peerId || remotePlay.grant?.guestId === local.peerId) &&
+              remotePlay.grant.guestId,
+          )}
           chatOpen={chatOpen}
           unreadCount={unreadCount}
           soundboardOpen={soundboardOpen}
@@ -679,6 +687,8 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           onToggleMute={toggleMute}
           onToggleDeafen={toggleDeafen}
           onToggleScreen={toggleScreen}
+          onStartScreenShare={(preset) => void startScreenShare(preset)}
+          onTogglePreset={() => void setScreenPreset(local.screenPreset === 'game' ? 'quality' : 'game')}
           onToggleSoundboard={() => setSoundboardOpen((o) => !o)}
           onToggleApps={() => setAppsModalOpen((o) => !o)}
           onToggleChat={toggleChat}

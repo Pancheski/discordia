@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { EyeOff, Gamepad2, Maximize2, Minimize2, MonitorUp, VolumeX } from 'lucide-react'
+import { EyeOff, Film, Gamepad2, Maximize2, Minimize2, MonitorUp, VolumeX, Zap } from 'lucide-react'
 import { useMediaStream } from '../hooks/useMediaStream'
+import type { ScreenSharePreset } from '../types'
 import { VolumeSlider } from './VolumeSlider'
 
 export interface ScreenSource {
@@ -14,6 +15,8 @@ export interface ScreenSource {
 
 interface ScreenStageProps {
   screen: ScreenSource
+  screenPreset?: ScreenSharePreset
+  onPresetChange?: (preset: ScreenSharePreset) => void
   onVolumeChange: (value: number) => void
   onStopWatching?: () => void
   onOpenRemotePlay?: () => void
@@ -21,6 +24,8 @@ interface ScreenStageProps {
 
 export function ScreenStage({
   screen,
+  screenPreset = 'quality',
+  onPresetChange,
   onVolumeChange,
   onStopWatching,
   onOpenRemotePlay,
@@ -35,6 +40,38 @@ export function ScreenStage({
     document.addEventListener('fullscreenchange', onChange)
     return () => document.removeEventListener('fullscreenchange', onChange)
   }, [])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+
+    const catchUpLive = () => {
+      try {
+        if (video.buffered && video.buffered.length > 0) {
+          const liveEdge = video.buffered.end(video.buffered.length - 1)
+          const drift = liveEdge - video.currentTime
+          // Pula imediatamente para o frame mais recente caso haja atraso na rede (> 80ms)
+          if (drift > 0.08) {
+            video.currentTime = liveEdge
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    video.addEventListener('timeupdate', catchUpLive)
+    video.addEventListener('waiting', catchUpLive)
+    video.addEventListener('stalled', catchUpLive)
+    const interval = setInterval(catchUpLive, 400)
+
+    return () => {
+      video.removeEventListener('timeupdate', catchUpLive)
+      video.removeEventListener('waiting', catchUpLive)
+      video.removeEventListener('stalled', catchUpLive)
+      clearInterval(interval)
+    }
+  }, [videoRef, screen.stream])
 
   useEffect(() => {
     const video = videoRef.current
@@ -85,6 +122,40 @@ export function ScreenStage({
             {screen.isLocal ? 'Sua transmissão' : screen.name}
           </span>
           {resolution && <span className="hidden text-xs text-white/60 sm:inline">{resolution}</span>}
+          {screen.isLocal && onPresetChange ? (
+            <div className="pointer-events-auto ml-1 inline-flex items-center rounded-md border border-white/10 bg-black/60 p-0.5 text-[11px] backdrop-blur">
+              <button
+                type="button"
+                onClick={() => onPresetChange('game')}
+                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-medium transition ${
+                  screenPreset === 'game'
+                    ? 'bg-amber-400 text-black font-bold shadow'
+                    : 'text-white/70 hover:text-white'
+                }`}
+                title="⚡ Modo Jogo (720p 60 FPS • Latência Zero)"
+              >
+                <Zap size={11} className={screenPreset === 'game' ? 'fill-black' : ''} />
+                <span>Modo Jogo (720p)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onPresetChange('quality')}
+                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-medium transition ${
+                  screenPreset === 'quality'
+                    ? 'bg-dc-brand text-white font-bold shadow'
+                    : 'text-white/70 hover:text-white'
+                }`}
+                title="🎬 Alta Qualidade (1080p 60 FPS)"
+              >
+                <Film size={11} />
+                <span>1080p</span>
+              </button>
+            </div>
+          ) : screenPreset === 'game' ? (
+            <span className="hidden items-center gap-1 rounded bg-amber-500/20 px-2 py-0.5 text-[11px] font-bold text-amber-300 border border-amber-500/30 sm:inline-flex">
+              <Zap size={11} className="fill-amber-300" /> Latência Zero
+            </span>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           {onOpenRemotePlay && (

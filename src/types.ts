@@ -20,6 +20,8 @@ export interface RemoteParticipant {
   connectionState: PeerConnectionState
 }
 
+export type ScreenSharePreset = 'game' | 'quality'
+
 export interface LocalState {
   peerId: string
   name: string
@@ -30,6 +32,7 @@ export interface LocalState {
   speaking: boolean
   screenStream: MediaStream | null
   screenHasAudio: boolean
+  screenPreset: ScreenSharePreset
 }
 
 export interface RoomSnapshot {

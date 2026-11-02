@@ -6,7 +6,13 @@ import { randomId } from './fileUtils'
 import { getIceServers } from './iceConfig'
 import { getPresence } from './presence'
 import type { PresenceRoomMember } from './presence'
-import { tuneScreenSdp, tuneSenders, tuneVoiceSdp } from './rtc'
+import {
+  tuneReceiversZeroLatency,
+  tuneScreenSdp,
+  tuneScreenSender,
+  tuneSenders,
+  tuneVoiceSdp,
+} from './rtc'
 import {
   BOT_PEER_ID,
   applyTrioAction,
@@ -31,6 +37,7 @@ import type {
   RoomStatus,
   RpsChoice,
   RpsDuelState,
+  ScreenSharePreset,
   ToastKind,
   TrioAction,
   TrioGameState,
@@ -161,7 +168,9 @@ export class RoomManager {
     speaking: false,
     screenStream: null,
     screenHasAudio: false,
+    screenPreset: 'quality',
   }
+  private screenPreset: ScreenSharePreset = 'quality'
 
   constructor(callbacks: RoomManagerCallbacks) {
     this.cb = callbacks
@@ -319,7 +328,53 @@ export class RoomManager {
     this.emit()
   }
 
-  async startScreenShare(): Promise<void> {
+  async setScreenPreset(preset: ScreenSharePreset): Promise<void> {
+    this.screenPreset = preset
+    this.local.screenPreset = preset
+
+    if (this.screenStream) {
+      const videoTrack = this.screenStream.getVideoTracks()[0]
+      if (videoTrack) {
+        try {
+          if (preset === 'game') {
+            await videoTrack.applyConstraints({
+              width: { ideal: 1280, max: 1280 },
+              height: { ideal: 720, max: 720 },
+              frameRate: { ideal: 60, max: 60 },
+            })
+            videoTrack.contentHint = 'motion'
+          } else {
+            await videoTrack.applyConstraints({
+              width: { ideal: 1920, max: 3840 },
+              height: { ideal: 1080, max: 2160 },
+              frameRate: { ideal: 60, max: 60 },
+            })
+            videoTrack.contentHint = 'detail'
+          }
+        } catch (err) {
+          console.warn('[WebRTC] Falha ao aplicar constraints no preset:', err)
+        }
+      }
+
+      for (const link of this.links.values()) {
+        const pc = link.screenOut?.peerConnection as RTCPeerConnection | undefined
+        if (pc) {
+          void tuneScreenSender(pc, preset)
+        }
+      }
+
+      this.toast(
+        'info',
+        preset === 'game'
+          ? '⚡ Modo Jogo ativado (720p 60 FPS • Latência Zero)'
+          : '🎬 Alta Qualidade ativada (1080p 60 FPS)',
+      )
+    }
+
+    this.emit()
+  }
+
+  async startScreenShare(preferredPreset?: ScreenSharePreset): Promise<void> {
     if (this.destroyed || this.screenStream) return
     const md = navigator.mediaDevices
     if (!md?.getDisplayMedia) {
@@ -330,25 +385,23 @@ export class RoomManager {
       return
     }
 
+    const isRemotePlayHost = this.remotePlayGrant?.hostId === this.local.peerId
+    const preset = preferredPreset ?? (isRemotePlayHost ? 'game' : this.screenPreset)
+    this.screenPreset = preset
+    this.local.screenPreset = preset
+
     let stream: MediaStream
     try {
       /**
-       * PREVENÇÃO DE ECO
-       * • displaySurface 'browser' pré-seleciona a aba "Guia do Chrome": o áudio capturado é SÓ
-       *   o daquela guia — as vozes da call (que tocam nesta aba) nunca entram na transmissão.
-       * • selfBrowserSurface 'exclude' remove a própria aba do Discordia da lista (evita o
-       *   "túnel infinito" visual e o loop de áudio).
-       * • restrictOwnAudio (Chrome 141+): mesmo em "Tela inteira", remove do áudio do sistema
-       *   o som emitido por ESTE documento (as vozes dos participantes). Ignorado onde não existe.
-       * • echoCancellation/noiseSuppression: o AEC do Chrome usa o áudio reproduzido como
-       *   referência e subtrai as vozes que vazarem na captura de sistema.
+       * PREVENÇÃO DE ECO E BAIXA LATÊNCIA
        */
+      const isGame = preset === 'game'
       const options = {
         video: {
           displaySurface: 'browser',
           frameRate: { ideal: 60, max: 60 },
-          width: { ideal: 1920, max: 3840 },
-          height: { ideal: 1080, max: 2160 },
+          width: isGame ? { ideal: 1280, max: 1280 } : { ideal: 1920, max: 3840 },
+          height: isGame ? { ideal: 720, max: 720 } : { ideal: 1080, max: 2160 },
         },
         audio: {
           suppressLocalAudioPlayback: false,
@@ -384,8 +437,8 @@ export class RoomManager {
 
     const videoTrack = stream.getVideoTracks()[0]
     if (videoTrack) {
-      // 'detail' informa ao encoder para preservar texto nítido e definição máxima de pixels
-      videoTrack.contentHint = 'detail'
+      // 'motion' prioriza fluidez e latência mínima; 'detail' preserva nitidez de texto
+      videoTrack.contentHint = preset === 'game' ? 'motion' : 'detail'
       videoTrack.addEventListener('ended', () => this.stopScreenShare())
     }
 
@@ -414,7 +467,12 @@ export class RoomManager {
       this.callPeer(link, 'screen')
     }
     this.broadcastState()
-    this.toast('success', 'Você está transmitindo sua tela em 60 fps e alta nitidez.')
+    this.toast(
+      'success',
+      preset === 'game'
+        ? '⚡ Transmitindo em Modo Jogo: 720p 60 FPS e Latência Zero!'
+        : '🎬 Transmitindo em Alta Qualidade: 1080p 60 FPS.',
+    )
     this.emit()
   }
 
@@ -761,6 +819,9 @@ export class RoomManager {
       guestName,
     })
     this.toast('success', `🎮 Controle (Jogador 2) liberado para ${guestName}!`)
+    if (this.screenStream && this.screenPreset !== 'game') {
+      void this.setScreenPreset('game')
+    }
     this.notifyRemotePlay()
   }
 
@@ -1999,7 +2060,11 @@ export class RoomManager {
     this.emit()
   }
 
-  private attachRemoteScreenStream(link: PeerLink, _call: MediaConnection, stream: MediaStream): void {
+  private attachRemoteScreenStream(link: PeerLink, call: MediaConnection, stream: MediaStream): void {
+    const pc = call.peerConnection as RTCPeerConnection | undefined
+    if (pc) {
+      tuneReceiversZeroLatency(pc)
+    }
     const isNew = link.info.screenStream?.id !== stream.id
     link.info.screenStream = stream
     this.screenStreams[link.id] = stream
@@ -2202,7 +2267,22 @@ export class RoomManager {
     if (!pc) return
 
     const applyTuning = () => {
-      if (outgoing || kind === 'mic') void tuneSenders(pc, kind)
+      if (outgoing && kind === 'screen') {
+        void tuneScreenSender(pc, this.screenPreset)
+      } else if (outgoing || kind === 'mic') {
+        void tuneSenders(pc, kind)
+      }
+      if (!outgoing && kind === 'screen') {
+        tuneReceiversZeroLatency(pc)
+      }
+    }
+
+    if (!outgoing && kind === 'screen') {
+      try {
+        pc.addEventListener('track', () => tuneReceiversZeroLatency(pc))
+      } catch {
+        /* ignore */
+      }
     }
 
     const onState = () => {
