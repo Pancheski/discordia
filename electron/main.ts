@@ -6,8 +6,9 @@ import net from 'node:net'
 import path from 'node:path'
 
 interface GamepadPacket {
-  type: 'gamepad:state' | 'gamepad:release'
+  type: 'gamepad:state' | 'gamepad:release' | 'gamepad:connect' | 'gamepad:disconnect'
   player?: number
+  slot?: number
   buttons?: number[]
   axes?: [number, number, number, number]
   triggers?: [number, number]
@@ -355,8 +356,19 @@ ipcMain.on('gamepad:state', (_event, payload: unknown) => {
   }
 })
 
-ipcMain.on('gamepad:release', () => {
-  gamepadHost.handlePacket({ type: 'gamepad:release' })
+ipcMain.on('gamepad:connect', (_event, slot: unknown) => {
+  gamepadHost.handlePacket({ type: 'gamepad:connect', slot: Number(slot) || 1 })
+})
+
+ipcMain.on('gamepad:disconnect', (_event, slot: unknown) => {
+  gamepadHost.handlePacket({ type: 'gamepad:disconnect', slot: Number(slot) || 1 })
+})
+
+ipcMain.on('gamepad:release', (_event, slot?: unknown) => {
+  gamepadHost.handlePacket({
+    type: 'gamepad:release',
+    slot: typeof slot === 'number' ? slot : undefined,
+  })
 })
 
 // ─── Captura de Janelas e Telas (Desktop Capturer) ───────────────────────────

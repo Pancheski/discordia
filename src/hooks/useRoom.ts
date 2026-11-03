@@ -192,6 +192,10 @@ export function useRoom() {
     (guestId: string | null) => managerRef.current?.grantRemotePlay(guestId),
     [],
   )
+  const revokeRemotePlay = useCallback(
+    (guestId: string) => managerRef.current?.revokeRemotePlay(guestId),
+    [],
+  )
   const sendGamepadState = useCallback(
     (payload: GamepadStatePayload) => managerRef.current?.sendGamepadState(payload),
     [],
@@ -255,6 +259,7 @@ export function useRoom() {
     sendGolfHole,
     remotePlay,
     grantRemotePlay,
+    revokeRemotePlay,
     sendGamepadState,
     connectCompanionBridge,
   }

@@ -12,6 +12,7 @@ interface RemotePlayControlProps {
   modalOpen: boolean
   onCloseModal: () => void
   onGrantGuest: (guestId: string | null) => void
+  onRevokeGuest?: (guestId: string) => void
   onSendGamepadState: (payload: GamepadStatePayload) => void
   onRetryCompanion: () => void
 }
@@ -47,6 +48,7 @@ export function RemotePlayControl({
   modalOpen,
   onCloseModal,
   onGrantGuest,
+  onRevokeGuest,
   onSendGamepadState,
   onRetryCompanion,
 }: RemotePlayControlProps) {
@@ -54,8 +56,11 @@ export function RemotePlayControl({
   const isNativeDesktop = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
   const hostReady = isNativeDesktop || companionConnected
 
-  const isHost = Boolean(grant && grant.hostId === localPeerId && grant.guestId)
-  const isAuthorizedGuest = Boolean(grant && grant.guestId === localPeerId)
+  const controllers = grant?.controllers || {}
+  const activeCount = Object.keys(controllers).length
+  const mySlot = localPeerId ? controllers[localPeerId] : undefined
+  const isAuthorizedGuest = Boolean(mySlot)
+  const isHost = Boolean(grant && grant.hostId === localPeerId && activeCount > 0)
 
   useEffect(() => {
     if (hostReady) return
@@ -72,6 +77,15 @@ export function RemotePlayControl({
   }, [hostReady, modalOpen, isHost, onRetryCompanion])
 
   const livePad = useGamepadCapture(isAuthorizedGuest, onSendGamepadState)
+
+  const slotBadgeColor =
+    mySlot === 1
+      ? 'bg-emerald-500/20 text-emerald-300 ring-emerald-400/30'
+      : mySlot === 2
+        ? 'bg-sky-500/20 text-sky-300 ring-sky-400/30'
+        : mySlot === 3
+          ? 'bg-amber-500/20 text-amber-300 ring-amber-400/30'
+          : 'bg-rose-500/20 text-rose-300 ring-rose-400/30'
 
   return (
     <>
@@ -93,7 +107,7 @@ export function RemotePlayControl({
         </div>
       )}
 
-      {/* HUD visual do Jogador 2 */}
+      {/* HUD visual do Jogador Convidado */}
       {isAuthorizedGuest && (
         <div className="flex shrink-0 flex-col gap-2 border-b border-emerald-500/30 bg-emerald-950/35 px-4 py-2 text-xs text-emerald-100">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -102,8 +116,10 @@ export function RemotePlayControl({
                 <Gamepad2 size={15} />
               </span>
               <span className="font-bold text-white">Controle ativado</span>
-              <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-300">
-                Jogador 2 · {grant?.hostName}
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ring-1 ${slotBadgeColor}`}
+              >
+                Jogador {mySlot} · {grant?.hostName}
               </span>
             </div>
 
@@ -207,7 +223,7 @@ export function RemotePlayControl({
                 onClick={() => onGrantGuest(null)}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-dc-red/20 px-3 py-2 text-xs font-bold text-dc-red transition hover:bg-dc-red hover:text-white"
               >
-                <Power size={14} /> Revogar Controle
+                <Power size={14} /> Revogar Todos ({activeCount})
               </button>
             ) : (
               <span />
@@ -250,7 +266,12 @@ export function RemotePlayControl({
           )}
 
           <div className="space-y-2">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-dc-muted">Participantes</h3>
+            <div className="flex items-center justify-between text-xs">
+              <h3 className="font-bold uppercase tracking-wider text-dc-muted">Participantes</h3>
+              <span className="font-semibold text-emerald-400">
+                {activeCount} / 4 Controles Ativos
+              </span>
+            </div>
 
             {participants.length === 0 ? (
               <div className="rounded-xl border border-white/5 bg-dc-darkest p-4 text-center text-xs text-dc-muted">
@@ -259,39 +280,61 @@ export function RemotePlayControl({
             ) : (
               <ul className="space-y-2">
                 {participants.map((p) => {
-                  const isSelected = grant?.hostId === localPeerId && grant?.guestId === p.peerId
+                  const assignedSlot = controllers[p.peerId]
+                  const isAssigned = typeof assignedSlot === 'number'
+
                   return (
                     <li
                       key={p.peerId}
                       className={`flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 transition ${
-                        isSelected
+                        isAssigned
                           ? 'border-emerald-400/60 bg-emerald-500/15'
                           : 'border-white/10 bg-dc-darkest hover:border-white/20'
                       }`}
                     >
                       <div className="flex min-w-0 items-center gap-2.5">
-                        <UserCheck size={16} className={isSelected ? 'text-emerald-400' : 'text-dc-muted'} />
-                        <p className="truncate text-sm font-semibold text-white">{p.name}</p>
+                        <UserCheck size={16} className={isAssigned ? 'text-emerald-400' : 'text-dc-muted'} />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-white">{p.name}</p>
+                          {isAssigned && (
+                            <span className="text-[11px] font-bold text-emerald-400">
+                              🎮 Jogador {assignedSlot} (Slot {assignedSlot})
+                            </span>
+                          )}
+                        </div>
                       </div>
 
-                      {isSelected ? (
+                      {isAssigned ? (
                         <button
                           type="button"
-                          onClick={() => onGrantGuest(null)}
-                          className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-extrabold text-black shadow transition hover:bg-emerald-400"
+                          onClick={() => {
+                            if (onRevokeGuest) {
+                              onRevokeGuest(p.peerId)
+                            } else {
+                              onGrantGuest(p.peerId)
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-extrabold text-black shadow transition hover:bg-rose-500 hover:text-white"
+                          title="Clique para revogar o controle deste jogador"
                         >
-                          <Check size={14} /> Ativo
+                          <Check size={14} /> Ativo (P{assignedSlot})
                         </button>
                       ) : (
                         <button
                           type="button"
+                          disabled={activeCount >= 4}
                           onClick={() => {
                             onRetryCompanion()
                             onGrantGuest(p.peerId)
                           }}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-dc-brand px-3 py-1.5 text-xs font-bold text-white transition hover:bg-dc-brand/90"
+                          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                            activeCount >= 4
+                              ? 'cursor-not-allowed bg-white/5 text-dc-muted'
+                              : 'bg-dc-brand text-white hover:bg-dc-brand/90'
+                          }`}
                         >
-                          <Gamepad2 size={14} /> Liberar Controle
+                          <Gamepad2 size={14} />
+                          {activeCount >= 4 ? 'Limite (4/4)' : 'Liberar Controle'}
                         </button>
                       )}
                     </li>

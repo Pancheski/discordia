@@ -67,6 +67,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     sendGolfHole,
     remotePlay,
     grantRemotePlay,
+    revokeRemotePlay,
     sendGamepadState,
     connectCompanionBridge,
   } = controller
@@ -450,7 +451,8 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                 setRemotePlayModalOpen(true)
               }}
               className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition ${
-                remotePlay.grant?.hostId === local.peerId && remotePlay.grant.guestId
+                remotePlay.grant?.hostId === local.peerId &&
+                Object.keys(remotePlay.grant.controllers || {}).length > 0
                   ? 'bg-emerald-600 text-white shadow ring-1 ring-emerald-400/50'
                   : 'bg-dc-darker text-emerald-300 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20'
               }`}
@@ -493,6 +495,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           modalOpen={remotePlayModalOpen}
           onCloseModal={() => setRemotePlayModalOpen(false)}
           onGrantGuest={grantRemotePlay}
+          onRevokeGuest={revokeRemotePlay}
           onSendGamepadState={sendGamepadState}
           onRetryCompanion={connectCompanionBridge}
         />
@@ -749,8 +752,9 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           screenSupported={screenSupported}
           screenPreset={local.screenPreset}
           isRemotePlayActive={Boolean(
-            (remotePlay.grant?.hostId === local.peerId || remotePlay.grant?.guestId === local.peerId) &&
-              remotePlay.grant.guestId,
+            (remotePlay.grant?.hostId === local.peerId &&
+              Object.keys(remotePlay.grant.controllers || {}).length > 0) ||
+              Boolean(remotePlay.grant?.controllers?.[local.peerId]),
           )}
           chatOpen={chatOpen}
           unreadCount={unreadCount}

@@ -89,23 +89,26 @@ export type PeerMessage =
       type: 'gamepad:grant'
       hostId: string
       hostName: string
-      guestId: string | null
-      guestName: string | null
+      controllers: Record<string, number>
+      guestId?: string | null
+      guestName?: string | null
     }
   | {
       type: 'gamepad:state'
       player: number
+      slot?: number
       buttons: number[]
       axes: [number, number, number, number]
       triggers?: [number, number]
     }
-  | { type: 'gamepad:release' }
+  | { type: 'gamepad:release'; slot?: number }
 
 // ─── Remote Play / Jogar Junto (Gamepad API -> WebRTC -> ViGEmBus) ──────
 
 export interface GamepadStatePayload {
   type: 'gamepad:state'
   player: number
+  slot?: number
   /** 17 botões padrão W3C/XInput (0 ou 1; índices 6 e 7 podem conter o valor contínuo 0..1 dos gatilhos LT/RT) */
   buttons: number[]
   /** [LeftStickX, LeftStickY, RightStickX, RightStickY] em [-1, 1] já com deadzone aplicada */
@@ -117,6 +120,8 @@ export interface GamepadStatePayload {
 export interface RemotePlayGrant {
   hostId: string
   hostName: string
+  /** Mapeamento de peerId dos convidados para o número do slot de controle (1 a 4) */
+  controllers: Record<string, number>
   guestId: string | null
   guestName: string | null
 }
@@ -326,7 +331,9 @@ export interface ElectronBridge {
   isElectron: boolean
   platform: string
   sendGamepadState: (payload: unknown) => void
-  releaseGamepad: () => void
+  releaseGamepad: (slot?: number) => void
+  connectGamepadSlot?: (slot: number) => void
+  disconnectGamepadSlot?: (slot: number) => void
   minimizeWindow: () => void
   maximizeWindow: () => void
   closeWindow: () => void

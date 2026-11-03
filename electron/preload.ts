@@ -17,7 +17,9 @@ export interface DiscordiaElectronAPI {
   isElectron: boolean
   platform: string
   sendGamepadState: (payload: unknown) => void
-  releaseGamepad: () => void
+  releaseGamepad: (slot?: number) => void
+  connectGamepadSlot: (slot: number) => void
+  disconnectGamepadSlot: (slot: number) => void
   minimizeWindow: () => void
   maximizeWindow: () => void
   closeWindow: () => void
@@ -39,8 +41,14 @@ const api: DiscordiaElectronAPI = {
   sendGamepadState: (payload: unknown) => {
     ipcRenderer.send('gamepad:state', payload)
   },
-  releaseGamepad: () => {
-    ipcRenderer.send('gamepad:release')
+  releaseGamepad: (slot?: number) => {
+    ipcRenderer.send('gamepad:release', slot)
+  },
+  connectGamepadSlot: (slot: number) => {
+    ipcRenderer.send('gamepad:connect', slot)
+  },
+  disconnectGamepadSlot: (slot: number) => {
+    ipcRenderer.send('gamepad:disconnect', slot)
   },
   minimizeWindow: () => {
     ipcRenderer.send('window:minimize')

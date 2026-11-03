@@ -164,6 +164,7 @@ export class RoomManager {
   }
   private spinSeq = 0
   private golfSeq = 0
+  private remoteControllers: Record<string, number> = {}
   private remotePlayGrant: RemotePlayGrant | null = null
   private companionWs: WebSocket | null = null
   private companionConnected = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
@@ -825,57 +826,134 @@ export class RoomManager {
 
   grantRemotePlay(guestId: string | null): void {
     if (this.destroyed || !this.local.peerId) return
+
+    // Se guestId for nulo, revoga o acesso de todos os convidados
     if (!guestId) {
+      for (const slot of Object.values(this.remoteControllers)) {
+        this.sendCompanionControl({ type: 'gamepad:disconnect', slot })
+      }
       this.sendCompanionRelease()
+      this.remoteControllers = {}
       this.remotePlayGrant = null
       this.broadcastMsg({
         type: 'gamepad:grant',
         hostId: this.local.peerId,
-        hostName: this.local.name,
+        hostName: this.local.name || 'Host',
+        controllers: {},
         guestId: null,
         guestName: null,
       })
       this.notifyRemotePlay()
+      this.toast('info', '🎮 Todos os controles virtuais foram revogados.')
       return
     }
 
+    // Se o convidado já possui um slot, revoga o slot dele (comportamento de toggle)
+    if (this.remoteControllers[guestId]) {
+      this.revokeRemotePlay(guestId)
+      return
+    }
+
+    // Atribui automaticamente o menor slot livre (1, 2, 3 ou 4)
+    const usedSlots = new Set(Object.values(this.remoteControllers))
+    const availableSlot = [1, 2, 3, 4].find((s) => !usedSlots.has(s))
+
+    if (!availableSlot) {
+      this.toast('warning', '⚠️ Limite máximo de 4 controles simultâneos atingido!')
+      return
+    }
+
+    this.remoteControllers[guestId] = availableSlot
     const link = this.links.get(guestId)
-    const guestName = link?.info.name ?? 'Jogador 2'
+    const guestName = link?.info.name ?? `Jogador ${availableSlot}`
+
     this.remotePlayGrant = {
       hostId: this.local.peerId,
       hostName: this.local.name || 'Host',
+      controllers: { ...this.remoteControllers },
       guestId,
       guestName,
     }
+
     this.connectCompanionBridge()
+    this.sendCompanionControl({ type: 'gamepad:connect', slot: availableSlot })
+
     this.broadcastMsg({
       type: 'gamepad:grant',
       hostId: this.local.peerId,
       hostName: this.local.name || 'Host',
+      controllers: { ...this.remoteControllers },
       guestId,
       guestName,
     })
-    this.toast('success', `🎮 Controle (Jogador 2) liberado para ${guestName}!`)
+
+    this.toast('success', `🎮 Controle (Jogador ${availableSlot}) liberado para ${guestName}!`)
     if (this.screenStream && this.screenPreset !== 'game') {
       void this.setScreenPreset('game')
     }
     this.notifyRemotePlay()
   }
 
+  revokeRemotePlay(guestId: string): void {
+    if (this.destroyed || !this.local.peerId) return
+    const slot = this.remoteControllers[guestId]
+    if (!slot) return
+
+    delete this.remoteControllers[guestId]
+    this.sendCompanionControl({ type: 'gamepad:disconnect', slot })
+
+    const remainingKeys = Object.keys(this.remoteControllers)
+    if (remainingKeys.length === 0) {
+      this.sendCompanionRelease()
+      this.remotePlayGrant = null
+    } else {
+      const firstGuestId = remainingKeys[0]
+      const firstLink = this.links.get(firstGuestId)
+      this.remotePlayGrant = {
+        hostId: this.local.peerId,
+        hostName: this.local.name || 'Host',
+        controllers: { ...this.remoteControllers },
+        guestId: firstGuestId,
+        guestName: firstLink?.info.name ?? null,
+      }
+    }
+
+    this.broadcastMsg({
+      type: 'gamepad:grant',
+      hostId: this.local.peerId,
+      hostName: this.local.name || 'Host',
+      controllers: { ...this.remoteControllers },
+      guestId: this.remotePlayGrant?.guestId ?? null,
+      guestName: this.remotePlayGrant?.guestName ?? null,
+    })
+
+    const link = this.links.get(guestId)
+    const name = link?.info.name ?? `Jogador ${slot}`
+    this.toast('info', `🎮 Controle do ${name} (Slot ${slot}) revogado.`)
+    this.notifyRemotePlay()
+  }
+
   sendGamepadState(payload: GamepadStatePayload): void {
     if (this.destroyed || !this.remotePlayGrant) return
-    if (this.remotePlayGrant.guestId !== this.local.peerId) return
+    const mySlot = this.remotePlayGrant.controllers?.[this.local.peerId]
+    if (!mySlot) return
     const hostId = this.remotePlayGrant.hostId
     if (!hostId || hostId === this.local.peerId) return
 
     const link = this.links.get(hostId)
     if (!link) return
 
+    const fullPayload: GamepadStatePayload = {
+      ...payload,
+      player: mySlot,
+      slot: mySlot,
+    }
+
     // Tenta enviar pelo RTCDataChannel dedicado "remote-gamepad" (ordered: false, maxRetransmits: 0)
     const ch = this.ensureGamepadChannel(link)
     if (ch && ch.readyState === 'open') {
       try {
-        ch.send(JSON.stringify(payload))
+        ch.send(JSON.stringify(fullPayload))
         return
       } catch {
         /* fallback para o DataConnection principal */
@@ -883,7 +961,7 @@ export class RoomManager {
     }
 
     if (link.data?.open) {
-      this.send(link.data, payload)
+      this.send(link.data, fullPayload)
     }
   }
 
@@ -938,7 +1016,7 @@ export class RoomManager {
         this.companionWs = null
         this.companionConnected = false
         this.notifyRemotePlay()
-        if (this.remotePlayGrant?.hostId === this.local.peerId && this.remotePlayGrant.guestId) {
+        if (this.remotePlayGrant?.hostId === this.local.peerId && Object.keys(this.remoteControllers).length > 0) {
           this.scheduleCompanionReconnect()
         }
       }
@@ -958,20 +1036,41 @@ export class RoomManager {
     this.companionRetryTimer = window.setTimeout(() => {
       this.companionRetryTimer = null
       if (this.destroyed) return
-      if (this.remotePlayGrant?.hostId === this.local.peerId && this.remotePlayGrant.guestId) {
+      if (this.remotePlayGrant?.hostId === this.local.peerId && Object.keys(this.remoteControllers).length > 0) {
         this.connectCompanionBridge()
       }
     }, 1500)
   }
 
-  private sendCompanionRelease(): void {
+  private sendCompanionControl(msg: { type: string; slot?: number; [k: string]: unknown }): void {
     if (typeof window !== 'undefined' && window.electron?.isElectron) {
-      window.electron.releaseGamepad()
+      if (msg.type === 'gamepad:connect' && typeof msg.slot === 'number') {
+        window.electron.connectGamepadSlot?.(msg.slot)
+      } else if (msg.type === 'gamepad:disconnect' && typeof msg.slot === 'number') {
+        window.electron.disconnectGamepadSlot?.(msg.slot)
+      } else if (msg.type === 'gamepad:release') {
+        window.electron.releaseGamepad(msg.slot)
+      }
+      return
+    }
+
+    if (this.companionWs && this.companionWs.readyState === WebSocket.OPEN) {
+      try {
+        this.companionWs.send(JSON.stringify(msg))
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  private sendCompanionRelease(slot?: number): void {
+    if (typeof window !== 'undefined' && window.electron?.isElectron) {
+      window.electron.releaseGamepad(slot)
       return
     }
     if (this.companionWs && this.companionWs.readyState === WebSocket.OPEN) {
       try {
-        this.companionWs.send(JSON.stringify({ type: 'gamepad:release' }))
+        this.companionWs.send(JSON.stringify({ type: 'gamepad:release', ...(slot ? { slot } : {}) }))
       } catch {
         /* ignore */
       }
@@ -998,7 +1097,12 @@ export class RoomManager {
 
   private notifyRemotePlay(): void {
     this.cb.onRemotePlayChange({
-      grant: this.remotePlayGrant ? { ...this.remotePlayGrant } : null,
+      grant: this.remotePlayGrant
+        ? {
+            ...this.remotePlayGrant,
+            controllers: { ...this.remoteControllers },
+          }
+        : null,
       companionConnected: this.companionConnected,
     })
   }
@@ -1026,6 +1130,10 @@ export class RoomManager {
     }
     this.clearRpsTimer()
     this.clearTrioTimers()
+    for (const slot of Object.values(this.remoteControllers)) {
+      this.sendCompanionControl({ type: 'gamepad:disconnect', slot })
+    }
+    this.remoteControllers = {}
     this.closeCompanionBridge()
     this.remotePlayGrant = null
     this.sentCustomSfxByPeer.clear()
@@ -1665,11 +1773,23 @@ export class RoomManager {
   private forwardGamepadPacketFromPeer(fromId: string, rawJson: string): void {
     if (this.destroyed) return
     if (this.remotePlayGrant?.hostId !== this.local.peerId) return
-    if (this.remotePlayGrant.guestId !== fromId) return
+    const slot = this.remoteControllers[fromId]
+    if (!slot) return
+
+    let packet: Record<string, unknown>
+    try {
+      packet = JSON.parse(rawJson)
+    } catch {
+      return
+    }
+
+    // Garante que o slot de controle anexado seja sempre o do participante autorizado
+    packet.slot = slot
+    packet.player = slot
 
     if (typeof window !== 'undefined' && window.electron?.isElectron) {
       try {
-        window.electron.sendGamepadState(JSON.parse(rawJson))
+        window.electron.sendGamepadState(packet)
       } catch {
         /* ignore */
       }
@@ -1681,7 +1801,7 @@ export class RoomManager {
       return
     }
     try {
-      this.companionWs.send(rawJson)
+      this.companionWs.send(JSON.stringify(packet))
     } catch {
       /* ignore */
     }
@@ -1852,6 +1972,7 @@ export class RoomManager {
           type: 'gamepad:grant',
           hostId: this.remotePlayGrant.hostId,
           hostName: this.remotePlayGrant.hostName,
+          controllers: { ...this.remoteControllers },
           guestId: this.remotePlayGrant.guestId,
           guestName: this.remotePlayGrant.guestName,
         })
@@ -1997,25 +2118,36 @@ export class RoomManager {
         return
       }
       case 'gamepad:grant': {
-        if (!msg.guestId) {
-          const wasMe = this.remotePlayGrant?.guestId === this.local.peerId
+        const controllers = msg.controllers || {}
+        const mySlot = this.local.peerId ? controllers[this.local.peerId] : undefined
+        const wasAuthorized = Boolean(this.remotePlayGrant?.controllers?.[this.local.peerId])
+        const isNowAuthorized = Boolean(mySlot)
+
+        if (Object.keys(controllers).length === 0) {
+          this.remoteControllers = {}
           this.remotePlayGrant = null
           this.notifyRemotePlay()
-          if (wasMe) {
+          if (wasAuthorized) {
             this.toast('info', '🎮 O Host encerrou a sessão de Remote Play.')
           }
           return
         }
+
+        this.remoteControllers = { ...controllers }
         this.remotePlayGrant = {
           hostId: msg.hostId || id,
           hostName: msg.hostName || link.info.name,
-          guestId: msg.guestId,
-          guestName: msg.guestName,
+          controllers,
+          guestId: Object.keys(controllers)[0] || null,
+          guestName: msg.guestName || null,
         }
         this.notifyRemotePlay()
-        if (msg.guestId === this.local.peerId) {
+
+        if (!wasAuthorized && isNowAuthorized) {
           this.ensureGamepadChannel(link)
-          this.toast('success', '🎮 Controle ativado! Conecte seu joystick para jogar')
+          this.toast('success', `🎮 Controle ativado (Jogador ${mySlot})! Conecte seu joystick para jogar.`)
+        } else if (wasAuthorized && !isNowAuthorized) {
+          this.toast('info', '🎮 Seu acesso ao controle no Remote Play foi encerrado.')
         }
         return
       }
@@ -2024,8 +2156,9 @@ export class RoomManager {
         return
       }
       case 'gamepad:release': {
-        if (this.remotePlayGrant?.guestId === id) {
-          this.sendCompanionRelease()
+        const slot = this.remoteControllers[id]
+        if (slot) {
+          this.sendCompanionControl({ type: 'gamepad:release', slot })
         }
         return
       }
@@ -2067,8 +2200,38 @@ export class RoomManager {
         this.cb.onRpsChange(null)
         this.toast('warning', `Duelo encerrado (${name} saiu da sala).`)
       }
-      if (this.remotePlayGrant?.guestId === id || this.remotePlayGrant?.hostId === id) {
-        this.sendCompanionRelease()
+      if (this.remoteControllers[id]) {
+        const slot = this.remoteControllers[id]
+        delete this.remoteControllers[id]
+        this.sendCompanionControl({ type: 'gamepad:disconnect', slot })
+
+        const remainingKeys = Object.keys(this.remoteControllers)
+        if (remainingKeys.length === 0) {
+          this.sendCompanionRelease()
+          this.remotePlayGrant = null
+        } else {
+          const firstGuestId = remainingKeys[0]
+          const firstLink = this.links.get(firstGuestId)
+          this.remotePlayGrant = {
+            hostId: this.local.peerId,
+            hostName: this.local.name || 'Host',
+            controllers: { ...this.remoteControllers },
+            guestId: firstGuestId,
+            guestName: firstLink?.info.name ?? null,
+          }
+        }
+
+        this.broadcastMsg({
+          type: 'gamepad:grant',
+          hostId: this.local.peerId,
+          hostName: this.local.name || 'Host',
+          controllers: { ...this.remoteControllers },
+          guestId: this.remotePlayGrant?.guestId ?? null,
+          guestName: this.remotePlayGrant?.guestName ?? null,
+        })
+        this.notifyRemotePlay()
+      } else if (this.remotePlayGrant?.hostId === id) {
+        this.remoteControllers = {}
         this.remotePlayGrant = null
         this.notifyRemotePlay()
       }

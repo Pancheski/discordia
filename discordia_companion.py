@@ -99,11 +99,12 @@ def ensure_single_instance() -> Optional[int]:
 
 
 class Xbox360Emulator:
-    def __init__(self) -> None:
-        logger.info("Inicializando controle virtual Xbox 360 via ViGEmBus...")
+    def __init__(self, slot: int = 1) -> None:
+        self.slot = slot
+        logger.info("Inicializando controle virtual Xbox 360 (Slot %d) via ViGEmBus...", slot)
         self.gamepad = vg.VX360Gamepad()
         self.reset()
-        logger.info("Controle Xbox 360 Virtual pronto no Windows!")
+        logger.info("Controle Xbox 360 Virtual pronto no Windows (Slot %d)!", slot)
 
     def reset(self) -> None:
         """Solta todos os botões, gatilhos e analógicos imediatamente."""
@@ -149,6 +150,56 @@ class Xbox360Emulator:
         self.gamepad.update()
 
 
+class MultiGamepadManager:
+    """Gerencia até 4 controles virtuais simultâneos de Xbox 360 (Slots 1 a 4)."""
+
+    def __init__(self) -> None:
+        self.controllers: Dict[int, Xbox360Emulator] = {}
+
+    def get_or_create(self, slot: int = 1) -> Optional[Xbox360Emulator]:
+        if slot < 1 or slot > 4:
+            slot = 1
+        if slot not in self.controllers:
+            try:
+                logger.info("Criando controle virtual Xbox 360 no Slot %d...", slot)
+                self.controllers[slot] = Xbox360Emulator(slot=slot)
+            except Exception as e:
+                logger.error("Falha ao instanciar controle virtual no Slot %d: %s", slot, e)
+                return None
+        return self.controllers.get(slot)
+
+    def disconnect(self, slot: int) -> None:
+        ctrl = self.controllers.pop(slot, None)
+        if ctrl:
+            try:
+                logger.info("Desconectando controle virtual do Slot %d...", slot)
+                ctrl.reset()
+            except Exception as e:
+                logger.error("Erro ao desconectar controle do Slot %d: %s", slot, e)
+
+    def reset_slot(self, slot: int) -> None:
+        ctrl = self.controllers.get(slot)
+        if ctrl:
+            ctrl.reset()
+
+    def reset_all(self) -> None:
+        for ctrl in self.controllers.values():
+            try:
+                ctrl.reset()
+            except Exception:
+                pass
+
+    def apply_state(self, payload: Dict[str, Any]) -> None:
+        raw_slot = payload.get("slot") or payload.get("player") or 1
+        try:
+            slot = int(raw_slot)
+        except (TypeError, ValueError):
+            slot = 1
+        ctrl = self.get_or_create(slot)
+        if ctrl:
+            ctrl.apply_state(payload)
+
+
 def create_tray_icon_image() -> "Image.Image":
     """Desenha um ícone estilizado de gamepad roxo/verde para a bandeja do Windows."""
     size = 64
@@ -169,14 +220,16 @@ def create_tray_icon_image() -> "Image.Image":
 
 class CompanionServer:
     def __init__(self) -> None:
-        self.emulator = Xbox360Emulator()
+        self.manager = MultiGamepadManager()
+        # Inicializa o Slot 1 de antemão
+        self.manager.get_or_create(1)
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.stop_event: Optional[asyncio.Event] = None
         self.tray_icon: Any = None
 
     async def handle_client(self, websocket: Any) -> None:
         peer = getattr(websocket, "remote_address", ("127.0.0.1", 0))
-        logger.info("Discordia Web conectado (%s).", peer)
+        logger.info("Discordia conectado (%s).", peer)
         try:
             async for raw_message in websocket:
                 try:
@@ -186,16 +239,29 @@ class CompanionServer:
 
                 msg_type = data.get("type")
                 if msg_type == "gamepad:state":
-                    self.emulator.apply_state(data)
+                    self.manager.apply_state(data)
+                elif msg_type == "gamepad:connect":
+                    slot = int(data.get("slot") or 1)
+                    self.manager.get_or_create(slot)
+                elif msg_type == "gamepad:disconnect":
+                    slot = int(data.get("slot") or 1)
+                    self.manager.disconnect(slot)
                 elif msg_type == "gamepad:release":
-                    self.emulator.reset()
+                    slot = data.get("slot")
+                    if slot is not None:
+                        try:
+                            self.manager.reset_slot(int(slot))
+                        except (TypeError, ValueError):
+                            self.manager.reset_all()
+                    else:
+                        self.manager.reset_all()
                 elif msg_type == "gamepad:ping":
                     await websocket.send(json.dumps({"type": "gamepad:pong", "status": "ready"}))
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
-            self.emulator.reset()
-            logger.info("Conexão encerrada (%s). Controle virtual resetado.", peer)
+            self.manager.reset_all()
+            logger.info("Conexão encerrada (%s). Controles virtuais resetados.", peer)
 
     async def run_async_server(self) -> None:
         self.loop = asyncio.get_running_loop()
@@ -208,12 +274,12 @@ class CompanionServer:
             ping_interval=15,
             ping_timeout=15,
         ):
-            logger.info("Servidor WebSocket ativo em ws://%s:%d", HOST, PORT)
+            logger.info("Servidor WebSocket ativo em ws://%s:%d (suporte a até 4 controles)", HOST, PORT)
             await self.stop_event.wait()
-        self.emulator.reset()
+        self.manager.reset_all()
 
     def request_stop(self) -> None:
-        self.emulator.reset()
+        self.manager.reset_all()
         if self.loop and self.stop_event:
             self.loop.call_soon_threadsafe(self.stop_event.set)
         if self.tray_icon:
@@ -235,10 +301,10 @@ class CompanionServer:
         server_thread.start()
 
         menu = pystray.Menu(
-            pystray.MenuItem("🟢 Discordia Host (Pronto para jogar)", lambda: None, enabled=False),
+            pystray.MenuItem("🟢 Discordia Host (Até 4 Controles)", lambda: None, enabled=False),
             pystray.MenuItem(
-                "Resetar Controle Virtual",
-                lambda _icon, _item: self.emulator.reset(),
+                "Resetar Todos os Controles Virtuais",
+                lambda _icon, _item: self.manager.reset_all(),
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
@@ -249,7 +315,7 @@ class CompanionServer:
         self.tray_icon = pystray.Icon(
             "DiscordiaHost",
             create_tray_icon_image(),
-            "Discordia Host — Remote Play Ativo (127.0.0.1:8765)",
+            "Discordia Host — Remote Play 4P (127.0.0.1:8765)",
             menu,
         )
         self.tray_icon.run()
