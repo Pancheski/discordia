@@ -68,6 +68,9 @@ export function RemotePlayControl({
   const isAuthorizedGuest = Boolean(mySlot)
   const isHost = Boolean(grant && grant.hostId === localPeerId && activeCount > 0)
 
+  const hostParticipant = participants.find((p) => p.peerId === grant?.hostId)
+  const hostStats = hostParticipant?.stats
+
   useEffect(() => {
     if (hostReady) return
     if (!modalOpen && !isHost) return
@@ -127,6 +130,24 @@ export function RemotePlayControl({
               >
                 Jogador {mySlot} · {grant?.hostName}
               </span>
+
+              {hostStats && typeof hostStats.rttMs === 'number' && (
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-mono font-bold ${
+                    hostStats.rttMs < 60
+                      ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/30'
+                      : hostStats.rttMs < 130
+                        ? 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/30'
+                        : 'bg-rose-500/20 text-rose-300 ring-1 ring-rose-500/30'
+                  }`}
+                  title={hostStats.isRelay ? 'Conectado via relay (TURN Metered)' : 'Conectado diretamente P2P (UDP)'}
+                >
+                  <span>⚡ {hostStats.rttMs} ms</span>
+                  <span className="text-[10px] font-sans font-medium text-white/70">
+                    {hostStats.isRelay ? '🟡 TURN' : '🟢 P2P'}
+                  </span>
+                </span>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -322,7 +343,17 @@ export function RemotePlayControl({
                       <div className="flex min-w-0 items-center gap-2.5">
                         <UserCheck size={16} className={isAssigned ? 'text-emerald-400' : 'text-dc-muted'} />
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-white">{p.name}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="truncate text-sm font-semibold text-white">{p.name}</p>
+                            {p.stats && typeof p.stats.rttMs === 'number' && (
+                              <span
+                                className="inline-flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-white/80"
+                                title={p.stats.isRelay ? 'Conexão TURN (Relay)' : 'Conexão Direta (P2P UDP)'}
+                              >
+                                ⚡ {p.stats.rttMs} ms · {p.stats.isRelay ? 'TURN' : 'P2P'}
+                              </span>
+                            )}
+                          </div>
                           {isAssigned && (
                             <span className="text-[11px] font-bold text-emerald-400">
                               🎮 Jogador {assignedSlot} (Slot {assignedSlot})

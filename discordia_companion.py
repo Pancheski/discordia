@@ -16,6 +16,7 @@ import ctypes
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -393,6 +394,15 @@ class CompanionServer:
         peer = getattr(websocket, "remote_address", ("127.0.0.1", 0))
         logger.info("Discordia conectado (%s).", peer)
 
+        # Desativa algoritmo de Nagle (TCP_NODELAY = 1) para envio instantâneo sem agregação de pacotes
+        try:
+            transport = getattr(websocket, "transport", None)
+            sock = transport.get_extra_info("socket") if transport else getattr(websocket, "socket", None)
+            if sock:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except Exception as e:
+            logger.debug("Não foi possível configurar TCP_NODELAY: %s", e)
+
         # Envia status do driver para o cliente Web/Desktop imediatamente na conexão
         try:
             await websocket.send(
@@ -461,6 +471,7 @@ class CompanionServer:
             self.handle_client,
             HOST,
             PORT,
+            compression=None,
             max_size=65536,
             ping_interval=15,
             ping_timeout=15,

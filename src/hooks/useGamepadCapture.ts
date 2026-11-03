@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { GamepadStatePayload } from '../types'
 
 const DEADZONE = 0.08
-const SEND_INTERVAL_MS = 16 // ~60 Hz
+const HIGH_FREQ_POLL_MS = 8 // 120 Hz para captura instantânea sem latência
+const HEARTBEAT_INTERVAL_MS = 16 // 60 Hz de heartbeat contínuo
 
 function applyDeadzone(value: number, deadzone = DEADZONE): number {
   if (!Number.isFinite(value)) return 0
@@ -107,9 +108,10 @@ export function useGamepadCapture(
 
       const signature = `${buttons.join(',')}|${axes.join(',')}`
       const changed = signature !== lastSignature
-      const intervalElapsed = now - lastSentAt >= SEND_INTERVAL_MS
+      const intervalElapsed = now - lastSentAt >= HEARTBEAT_INTERVAL_MS
 
-      // Dispara quando houver alteração de botões/eixos ou em intervalos de 16ms (60 Hz)
+      // Dispara imediatamente quando houver alteração de botões/eixos (amostragem em 120 Hz)
+      // ou a cada 16ms (60 Hz) como heartbeat de estabilidade
       if (changed || intervalElapsed) {
         lastSignature = signature
         lastSentAt = now
@@ -132,12 +134,22 @@ export function useGamepadCapture(
           triggers,
         })
       }
-
-      rafId = window.requestAnimationFrame(poll)
     }
 
-    rafId = window.requestAnimationFrame(poll)
+    // Loop híbrido: interval de 8ms (120 Hz) para captura instantânea de input
+    // + requestAnimationFrame para sincronia visual com a taxa de atualização do monitor
+    const timerId = window.setInterval(() => {
+      poll(performance.now())
+    }, HIGH_FREQ_POLL_MS)
+
+    const rafLoop = (time: number) => {
+      poll(time)
+      rafId = window.requestAnimationFrame(rafLoop)
+    }
+    rafId = window.requestAnimationFrame(rafLoop)
+
     return () => {
+      window.clearInterval(timerId)
       window.cancelAnimationFrame(rafId)
     }
   }, [enabled])

@@ -177,6 +177,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           isLocal: false,
           volume: p.screenVolume,
           hasAudio: stream.getAudioTracks().length > 0,
+          stats: p.stats,
         })
       }
     }

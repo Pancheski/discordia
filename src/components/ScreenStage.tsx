@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { EyeOff, Film, Maximize2, Minimize2, MonitorUp, VolumeX, Zap } from 'lucide-react'
 import { useMediaStream } from '../hooks/useMediaStream'
-import type { ScreenSharePreset } from '../types'
+import type { PeerStats, ScreenSharePreset } from '../types'
 import { VolumeSlider } from './VolumeSlider'
 
 export interface ScreenSource {
@@ -11,6 +11,7 @@ export interface ScreenSource {
   isLocal: boolean
   volume: number
   hasAudio: boolean
+  stats?: PeerStats
 }
 
 interface ScreenStageProps {
@@ -29,7 +30,31 @@ export function ScreenStage({
   onStopWatching,
 }: ScreenStageProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const videoRef = useMediaStream<HTMLVideoElement>(screen.stream)
+
+  // Desacoplamento de Vídeo e Áudio para eliminar atraso forçado pelo jitter buffer do Chromium
+  const videoOnlyStream = useMemo(() => {
+    if (!screen.stream) return null
+    const vTracks = screen.stream.getVideoTracks()
+    return vTracks.length > 0 ? new MediaStream([vTracks[0]]) : null
+  }, [screen.stream])
+
+  const audioOnlyStream = useMemo(() => {
+    if (!screen.stream || screen.isLocal) return null
+    const aTracks = screen.stream.getAudioTracks()
+    return aTracks.length > 0 ? new MediaStream([aTracks[0]]) : null
+  }, [screen.stream, screen.isLocal])
+
+  const videoRef = useMediaStream<HTMLVideoElement>(videoOnlyStream)
+  const audioRef = useMediaStream<HTMLAudioElement>(audioOnlyStream)
+
+  // Ajusta volume no elemento de áudio desacoplado
+  useEffect(() => {
+    const el = audioRef.current
+    if (el) {
+      el.volume = Math.max(0, Math.min(1, screen.volume))
+    }
+  }, [audioRef, screen.volume])
+
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [resolution, setResolution] = useState('')
 
@@ -109,6 +134,7 @@ export function ScreenStage({
       onDoubleClick={toggleFullscreen}
     >
       <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
+      {audioOnlyStream && <audio ref={audioRef} autoPlay playsInline />}
 
       {/* Barra superior */}
       <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 bg-gradient-to-b from-black/75 to-transparent p-3 opacity-100 transition-opacity duration-300">
@@ -120,6 +146,19 @@ export function ScreenStage({
             {screen.isLocal ? 'Sua transmissão' : screen.name}
           </span>
           {resolution && <span className="hidden text-xs text-white/60 sm:inline">{resolution}</span>}
+
+          {/* Telemetria de Latência Real (Ping ms + Tipo de Conexão P2P vs TURN) */}
+          {screen.stats && !screen.isLocal && (
+            <span className="hidden items-center gap-1.5 rounded-md border border-white/10 bg-black/60 px-2 py-0.5 font-mono text-[11px] text-white/90 backdrop-blur sm:inline-flex">
+              <span className="font-bold text-emerald-400">
+                ⚡ {screen.stats.rttMs !== null ? `${screen.stats.rttMs} ms` : '0 ms'}
+              </span>
+              <span className="text-white/30">·</span>
+              <span className={screen.stats.isRelay ? 'font-medium text-amber-300' : 'font-medium text-emerald-300'}>
+                {screen.stats.isRelay ? '🟡 Retransmitida (TURN)' : '🟢 Direta (P2P UDP)'}
+              </span>
+            </span>
+          )}
           {screen.isLocal && onPresetChange ? (
             <div className="pointer-events-auto ml-1 inline-flex items-center rounded-md border border-white/10 bg-black/60 p-0.5 text-[11px] backdrop-blur">
               <button
@@ -214,7 +253,13 @@ interface ScreenThumbProps {
 }
 
 export function ScreenThumb({ screen, active, onSelect }: ScreenThumbProps) {
-  const videoRef = useMediaStream<HTMLVideoElement>(screen.stream)
+  const videoOnlyStream = useMemo(() => {
+    if (!screen.stream) return null
+    const vTracks = screen.stream.getVideoTracks()
+    return vTracks.length > 0 ? new MediaStream([vTracks[0]]) : null
+  }, [screen.stream])
+
+  const videoRef = useMediaStream<HTMLVideoElement>(videoOnlyStream)
   return (
     <button
       type="button"

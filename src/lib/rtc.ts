@@ -77,8 +77,11 @@ export function tuneVoiceSdp(sdp: string): string {
 }
 
 /**
- * Otimiza o SDP para o canal de TELA (Áudio de Sistema em Estéreo de alta fidelidade
- * e Vídeo a até 12 Mbps sem congelamento ou degradação embaçada).
+ * Otimiza o SDP para o canal de TELA e JOGOS:
+ * - Prioriza forçadamente o codec H.264 (aceleração por hardware via NVENC/Intel QuickSync/AMD AMF).
+ * - Coloca perfis Constrained Baseline (42e01f / 42001f sem B-frames) em primeiro lugar no payload de vídeo.
+ * - Injeta hints de bitrate ultrarrápido (min 2000 kbps, start 4000 kbps, max 6000 kbps) para latência zero.
+ * - Configura áudio estéreo em alta fidelidade com Opus a 256 kbps.
  */
 export function tuneScreenSdp(sdp: string): string {
   let modified = sdp
@@ -97,28 +100,105 @@ export function tuneScreenSdp(sdp: string): string {
     })
   }
 
-  // 2. Modificadores de largura de banda na seção m=video (até 12 Mbps)
-  // b=AS:12000 (12.000 kbps) e b=TIAS:12000000 (12.000.000 bps)
+  // 2. Priorização forçada do H.264 (NVENC) e ordenação de payloads na linha m=video
   if (modified.includes('m=video')) {
+    const h264BaselinePts: string[] = []
+    const h264OtherPts: string[] = []
+    const allVideoPts: string[] = []
+
+    const rtpmapRegex = /a=rtpmap:(\d+)\s+([^/\r\n]+)\/90000/gi
+    let match: RegExpExecArray | null
+    while ((match = rtpmapRegex.exec(modified)) !== null) {
+      const pt = match[1]
+      const codecName = match[2].toUpperCase()
+      allVideoPts.push(pt)
+      if (codecName === 'H264') {
+        const fmtpRegex = new RegExp(`a=fmtp:${pt}\\s+([^\\r\\n]+)`, 'i')
+        const fmtpMatch = fmtpRegex.exec(modified)
+        const fmtpLine = fmtpMatch ? fmtpMatch[1].toLowerCase() : ''
+        if (fmtpLine.includes('42e01f') || fmtpLine.includes('42001f')) {
+          h264BaselinePts.push(pt)
+        } else {
+          h264OtherPts.push(pt)
+        }
+      }
+    }
+
+    const preferredH264 = [...h264BaselinePts, ...h264OtherPts]
+    if (preferredH264.length > 0) {
+      modified = modified.replace(/(m=video\s+\d+\s+[A-Z/]+\s+)([0-9\s]+)/i, (_full, prefix, ptsStr) => {
+        const originalPts = (ptsStr as string).trim().split(/\s+/)
+        const otherPts = originalPts.filter((p) => !preferredH264.includes(p))
+        const reordered = [...preferredH264, ...otherPts].join(' ')
+        return `${prefix}${reordered}`
+      })
+    }
+
+    // Modificadores de largura de banda na seção m=video (6 Mbps para latência zero)
     modified = modified.replace(/(m=video [^\r\n]+)/, (line) => {
       let extra = ''
-      if (!modified.includes('b=AS:')) extra += '\r\nb=AS:12000'
-      if (!modified.includes('b=TIAS:')) extra += '\r\nb=TIAS:12000000'
+      if (!modified.includes('b=AS:')) extra += '\r\nb=AS:6000'
+      if (!modified.includes('b=TIAS:')) extra += '\r\nb=TIAS:6000000'
       return line + extra
     })
 
-    // Injeta hints de bitrate do Chrome (evita que a transmissão inicie a 300kbps embaçada)
-    const videoPts = [...modified.matchAll(/a=rtpmap:(\d+) (?:VP8|VP9|H264)\/90000/gi)].map((m) => m[1])
-    for (const pt of videoPts) {
+    // Injeta hints de bitrate do WebRTC para início imediato a 4000 kbps (evita 300kbps embaçada)
+    for (const pt of allVideoPts) {
       modified = updateFmtpParams(modified, pt, {
-        'x-google-min-bitrate': '2500',
-        'x-google-start-bitrate': '6000',
-        'x-google-max-bitrate': '12000',
+        'x-google-min-bitrate': '2000',
+        'x-google-start-bitrate': '4000',
+        'x-google-max-bitrate': '6000',
       })
     }
   }
 
   return modified
+}
+
+/**
+ * Ordena os codecs suportados priorizando H.264 Constrained Baseline
+ * via transceiver.setCodecPreferences para garantir aceleração por hardware (NVENC).
+ */
+export function preferH264Codec(pc: RTCPeerConnection): void {
+  try {
+    if (typeof RTCRtpSender === 'undefined' || !RTCRtpSender.getCapabilities) return
+    const capabilities = RTCRtpSender.getCapabilities('video')
+    if (!capabilities || !capabilities.codecs) return
+
+    const allCodecs = capabilities.codecs
+    type CodecItem = (typeof allCodecs)[number]
+    const h264Baseline: CodecItem[] = []
+    const h264Other: CodecItem[] = []
+    const otherCodecs: CodecItem[] = []
+
+    for (const c of allCodecs) {
+      if (c.mimeType.toLowerCase() === 'video/h264') {
+        const profile = (c.sdpFmtpLine || '').toLowerCase()
+        if (profile.includes('42e01f') || profile.includes('42001f')) {
+          h264Baseline.push(c)
+        } else {
+          h264Other.push(c)
+        }
+      } else {
+        otherCodecs.push(c)
+      }
+    }
+
+    const preferredOrder = [...h264Baseline, ...h264Other, ...otherCodecs]
+
+    const transceivers = pc.getTransceivers ? pc.getTransceivers() : []
+    for (const tc of transceivers) {
+      const isVideo =
+        tc.receiver?.track?.kind === 'video' ||
+        tc.sender?.track?.kind === 'video' ||
+        tc.mid?.toLowerCase().includes('video')
+      if (isVideo && typeof tc.setCodecPreferences === 'function') {
+        tc.setCodecPreferences(preferredOrder)
+      }
+    }
+  } catch (err) {
+    console.debug('[discordia] setCodecPreferences:', err)
+  }
 }
 
 /**

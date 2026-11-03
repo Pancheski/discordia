@@ -7,6 +7,7 @@ import { getIceServers } from './iceConfig'
 import { getPresence } from './presence'
 import type { PresenceRoomMember } from './presence'
 import {
+  preferH264Codec,
   tuneReceiversZeroLatency,
   tuneScreenSdp,
   tuneScreenSender,
@@ -151,6 +152,7 @@ export class RoomManager {
   private readonly screenStreams: Record<string, MediaStream> = {}
   private localDetector: LocalSpeakingDetector | null = null
   private discoveryTimer: number | null = null
+  private statsTimer: number | null = null
   private presenceUnsub: (() => void) | null = null
   private destroyed = false
   private joinedAt = 0
@@ -302,6 +304,7 @@ export class RoomManager {
     })
     void this.syncPresenceAndDiscover()
     this.discoveryTimer = window.setInterval(() => void this.syncPresenceAndDiscover(), DISCOVERY_INTERVAL_MS)
+    this.statsTimer = window.setInterval(() => void this.collectPeerStats(), 1500)
     this.emit()
     return true
   }
@@ -1191,6 +1194,10 @@ export class RoomManager {
     if (this.discoveryTimer !== null) {
       window.clearInterval(this.discoveryTimer)
       this.discoveryTimer = null
+    }
+    if (this.statsTimer !== null) {
+      window.clearInterval(this.statsTimer)
+      this.statsTimer = null
     }
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer)
@@ -2583,24 +2590,114 @@ export class RoomManager {
     this.watchConnection(link, call, kind, false)
   }
 
+  private async collectPeerStats(): Promise<void> {
+    if (this.destroyed) return
+
+    let changed = false
+    for (const link of this.links.values()) {
+      const pc = (
+        link.screenIn?.peerConnection ||
+        link.screenOut?.peerConnection ||
+        (link.data as unknown as { peerConnection?: RTCPeerConnection })?.peerConnection ||
+        link.micIn?.peerConnection ||
+        link.micOut?.peerConnection
+      ) as RTCPeerConnection | undefined
+
+      if (!pc || !pc.getStats || pc.connectionState === 'closed') continue
+
+      try {
+        const stats = await pc.getStats()
+        let selectedPair: any = null
+        for (const report of stats.values()) {
+          if (
+            report.type === 'candidate-pair' &&
+            (report.selected || report.state === 'succeeded' || report.nominated)
+          ) {
+            selectedPair = report
+            break
+          }
+        }
+
+        if (selectedPair) {
+          let rttMs: number | null = null
+          if (typeof selectedPair.currentRoundTripTime === 'number') {
+            rttMs = Math.round(selectedPair.currentRoundTripTime * 1000)
+          } else if (typeof selectedPair.totalRoundTripTime === 'number' && selectedPair.responsesReceived > 0) {
+            rttMs = Math.round((selectedPair.totalRoundTripTime / selectedPair.responsesReceived) * 1000)
+          }
+
+          let isRelay = false
+          let candidateType = 'host'
+          const localCand = stats.get(selectedPair.localCandidateId)
+          const remoteCand = stats.get(selectedPair.remoteCandidateId)
+          if (localCand?.candidateType === 'relay' || remoteCand?.candidateType === 'relay') {
+            isRelay = true
+            candidateType = 'relay'
+          } else if (localCand?.candidateType) {
+            candidateType = localCand.candidateType
+          }
+
+          const prevStats = link.info.stats
+          if (
+            !prevStats ||
+            prevStats.rttMs !== rttMs ||
+            prevStats.isRelay !== isRelay ||
+            prevStats.candidateType !== candidateType
+          ) {
+            link.info.stats = { rttMs, isRelay, candidateType }
+            changed = true
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (changed && !this.destroyed) {
+      this.emit()
+    }
+  }
+
   private watchConnection(link: PeerLink, call: MediaConnection, kind: MediaKind, outgoing: boolean): void {
     const pc = call.peerConnection as RTCPeerConnection | undefined
     if (!pc) return
 
     const applyTuning = () => {
+      if (kind === 'screen') {
+        preferH264Codec(pc)
+      }
       if (outgoing && kind === 'screen') {
         void tuneScreenSender(pc, this.screenPreset)
       } else if (outgoing || kind === 'mic') {
         void tuneSenders(pc, kind)
       }
-      if (!outgoing && kind === 'screen') {
+      if (!outgoing) {
         tuneReceiversZeroLatency(pc)
       }
     }
 
-    if (!outgoing && kind === 'screen') {
+    if (kind === 'screen') {
+      preferH264Codec(pc)
+    }
+
+    if (!outgoing) {
       try {
-        pc.addEventListener('track', () => tuneReceiversZeroLatency(pc))
+        tuneReceiversZeroLatency(pc)
+        pc.addEventListener('track', (ev) => {
+          if (ev.receiver) {
+            try {
+              if ('playoutDelayHint' in ev.receiver) {
+                ;(ev.receiver as unknown as { playoutDelayHint: number }).playoutDelayHint = 0
+              }
+              if ('jitterBufferTarget' in ev.receiver) {
+                ;(ev.receiver as unknown as { jitterBufferTarget: number }).jitterBufferTarget = 0
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+          tuneReceiversZeroLatency(pc)
+        })
       } catch {
         /* ignore */
       }

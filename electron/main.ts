@@ -454,6 +454,12 @@ function initAutoUpdater(): void {
   void autoUpdater.checkForUpdatesAndNotify()
 }
 
+// Desativa congelamento e throttling em segundo plano no Chromium
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+app.commandLine.appendSwitch('webrtc-max-cpu-consumption-percentage', '100')
+
 app.whenReady().then(() => {
   gamepadHost.start()
   createMainWindow()

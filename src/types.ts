@@ -4,6 +4,12 @@ export type PeerConnectionState = 'connecting' | 'connected' | 'reconnecting' | 
 
 export type MediaKind = 'mic' | 'screen'
 
+export interface PeerStats {
+  rttMs: number | null
+  isRelay: boolean
+  candidateType?: string
+}
+
 export interface RemoteParticipant {
   peerId: string
   name: string
@@ -18,6 +24,8 @@ export interface RemoteParticipant {
   screenVolume: number
   /** Estado detalhado da conexão P2P/ICE com este participante */
   connectionState: PeerConnectionState
+  /** Estatísticas de latência RTT e tipo de rota P2P/TURN em tempo real */
+  stats?: PeerStats
 }
 
 export type ScreenSharePreset = 'game' | 'quality'
