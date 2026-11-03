@@ -253,6 +253,7 @@ class IntegratedGamepadHost {
 
 const gamepadHost = new IntegratedGamepadHost()
 let mainWindow: BrowserWindow | null = null
+let selectedDesktopSourceId: string | null = null
 
 function getAppIcon(): string {
   const candidates = [
@@ -293,9 +294,11 @@ function createMainWindow(): void {
     desktopCapturer
       .getSources({ types: ['screen', 'window'] })
       .then((sources) => {
-        const primary = sources[0]
-        if (primary) {
-          callback({ video: primary, audio: 'loopback' })
+        const targetId = selectedDesktopSourceId
+        selectedDesktopSourceId = null
+        const chosen = targetId ? sources.find((s) => s.id === targetId) : sources[0]
+        if (chosen) {
+          callback({ video: chosen, audio: 'loopback' })
         } else {
           callback({})
         }
@@ -354,6 +357,32 @@ ipcMain.on('gamepad:state', (_event, payload: unknown) => {
 
 ipcMain.on('gamepad:release', () => {
   gamepadHost.handlePacket({ type: 'gamepad:release' })
+})
+
+// ─── Captura de Janelas e Telas (Desktop Capturer) ───────────────────────────
+ipcMain.handle('get-desktop-sources', async () => {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['window', 'screen'],
+      thumbnailSize: { width: 320, height: 180 },
+      fetchWindowIcons: true,
+    })
+    return sources.map((s) => ({
+      id: s.id,
+      name: s.name,
+      thumbnail: s.thumbnail.toDataURL(),
+      appIcon: s.appIcon ? s.appIcon.toDataURL() : null,
+      isScreen: s.id.startsWith('screen:'),
+    }))
+  } catch (err) {
+    console.warn('[desktopCapturer] Erro ao buscar fontes de captura:', err)
+    return []
+  }
+})
+
+ipcMain.handle('select-desktop-source', (_event, sourceId: string | null) => {
+  selectedDesktopSourceId = sourceId
+  return true
 })
 
 // ─── Global Shortcuts (Mute / Deafen) ────────────────────────────────────────

@@ -314,6 +314,14 @@ export interface KeybindShortcuts {
   toggleDeafen: string
 }
 
+export interface DesktopSourceInfo {
+  id: string
+  name: string
+  thumbnail: string
+  appIcon: string | null
+  isScreen: boolean
+}
+
 export interface ElectronBridge {
   isElectron: boolean
   platform: string
@@ -329,6 +337,9 @@ export interface ElectronBridge {
   // Global Shortcuts
   registerGlobalShortcuts: (shortcuts: KeybindShortcuts) => void
   onShortcutTriggered: (callback: (action: 'toggle-mute' | 'toggle-deafen') => void) => () => void
+  // Captura de Janelas e Telas (Desktop Capturer)
+  getDesktopSources: () => Promise<DesktopSourceInfo[]>
+  selectDesktopSource: (sourceId: string | null) => Promise<boolean>
 }
 
 declare global {

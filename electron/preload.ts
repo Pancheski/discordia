@@ -5,6 +5,14 @@ export interface KeybindShortcuts {
   toggleDeafen: string
 }
 
+export interface DesktopSourceInfo {
+  id: string
+  name: string
+  thumbnail: string
+  appIcon: string | null
+  isScreen: boolean
+}
+
 export interface DiscordiaElectronAPI {
   isElectron: boolean
   platform: string
@@ -20,6 +28,9 @@ export interface DiscordiaElectronAPI {
   // Global Shortcuts
   registerGlobalShortcuts: (shortcuts: KeybindShortcuts) => void
   onShortcutTriggered: (callback: (action: 'toggle-mute' | 'toggle-deafen') => void) => () => void
+  // Captura de Janelas e Telas (Desktop Capturer)
+  getDesktopSources: () => Promise<DesktopSourceInfo[]>
+  selectDesktopSource: (sourceId: string | null) => Promise<boolean>
 }
 
 const api: DiscordiaElectronAPI = {
@@ -69,6 +80,9 @@ const api: DiscordiaElectronAPI = {
       ipcRenderer.removeListener('shortcut-triggered', handler)
     }
   },
+  // Captura de Janelas e Telas (Desktop Capturer)
+  getDesktopSources: () => ipcRenderer.invoke('get-desktop-sources'),
+  selectDesktopSource: (sourceId: string | null) => ipcRenderer.invoke('select-desktop-source', sourceId),
 }
 
 contextBridge.exposeInMainWorld('electron', api)

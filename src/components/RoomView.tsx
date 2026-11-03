@@ -4,6 +4,7 @@ import { AppLauncherModal } from './AppLauncherModal'
 import { AudioSink } from './AudioSink'
 import { ChatSidebar } from './ChatSidebar'
 import { ControlBar } from './ControlBar'
+import { DesktopScreenPickerModal } from './DesktopScreenPickerModal'
 import { KeybindSettingsModal } from './KeybindSettingsModal'
 import { MiniGolfGame } from './MiniGolfGame'
 import { ParticipantTile } from './ParticipantTile'
@@ -19,7 +20,7 @@ import { playUiSfx } from '../hooks/useAudioSystem'
 import type { RoomController } from '../hooks/useRoom'
 import { loadSavedKeybinds, type KeybindShortcuts } from '../lib/keybinds'
 import { buildRoomLink, copyToClipboard, detectCapabilities } from '../lib/utils'
-import type { AppActivityId, RoomSnapshot } from '../types'
+import type { AppActivityId, RoomSnapshot, ScreenSharePreset } from '../types'
 
 interface RoomViewProps {
   snapshot: RoomSnapshot
@@ -82,6 +83,8 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
   const [autoplayBlocked, setAutoplayBlocked] = useState(false)
   const [audioUnlockSignal, setAudioUnlockSignal] = useState(0)
   const [readUpTo, setReadUpTo] = useState(0)
+  const [desktopPickerOpen, setDesktopPickerOpen] = useState(false)
+  const [selectedPresetForPicker, setSelectedPresetForPicker] = useState<ScreenSharePreset>('game')
   const prevMsgCountRef = useRef(chat.messages.length)
   const screenSupported = useMemo(() => detectCapabilities().screenShare, [])
   const isElectron = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
@@ -208,14 +211,38 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     return ok
   }, [room, pushToast])
 
+  const handleRequestScreenShare = useCallback(
+    (preset?: ScreenSharePreset) => {
+      const targetPreset = preset ?? local.screenPreset ?? 'game'
+      if (isElectron) {
+        setSelectedPresetForPicker(targetPreset)
+        setDesktopPickerOpen(true)
+      } else {
+        void startScreenShare(targetPreset)
+      }
+    },
+    [isElectron, local.screenPreset, startScreenShare],
+  )
+
+  const handleConfirmDesktopPicker = useCallback(
+    async (sourceId: string, chosenPreset: ScreenSharePreset) => {
+      setDesktopPickerOpen(false)
+      if (window.electron?.selectDesktopSource) {
+        await window.electron.selectDesktopSource(sourceId)
+      }
+      await startScreenShare(chosenPreset)
+    },
+    [startScreenShare],
+  )
+
   const toggleScreen = useCallback(() => {
     if (local.screenStream) {
       stopScreenShare()
       if (watchedScreenId === 'local') setWatchedScreenId(null)
       return
     }
-    void startScreenShare()
-  }, [local.screenStream, startScreenShare, stopScreenShare, watchedScreenId])
+    handleRequestScreenShare()
+  }, [handleRequestScreenShare, local.screenStream, stopScreenShare, watchedScreenId])
 
   // ─── Atalhos Globais e Navegador (Mute / Deafen) ─────────────────────────
   const [activeKeybinds, setActiveKeybinds] = useState<KeybindShortcuts>(loadSavedKeybinds)
@@ -734,7 +761,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           onToggleMute={toggleMute}
           onToggleDeafen={toggleDeafen}
           onToggleScreen={toggleScreen}
-          onStartScreenShare={(preset) => void startScreenShare(preset)}
+          onStartScreenShare={(preset) => handleRequestScreenShare(preset)}
           onTogglePreset={() => void setScreenPreset(local.screenPreset === 'game' ? 'quality' : 'game')}
           onToggleSoundboard={() => setSoundboardOpen((o) => !o)}
           onToggleApps={() => setAppsModalOpen((o) => !o)}
@@ -778,6 +805,13 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
         open={keybindsModalOpen}
         onClose={() => setKeybindsModalOpen(false)}
         onSave={(shortcuts) => setActiveKeybinds(shortcuts)}
+      />
+
+      <DesktopScreenPickerModal
+        open={desktopPickerOpen}
+        onClose={() => setDesktopPickerOpen(false)}
+        initialPreset={selectedPresetForPicker}
+        onSelectSource={handleConfirmDesktopPicker}
       />
 
       {/* Áudio recebido dos participantes: mudo quando local.deafened for verdadeiro */}

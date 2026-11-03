@@ -418,7 +418,6 @@ export class RoomManager {
       const isGame = preset === 'game'
       const options = {
         video: {
-          displaySurface: 'browser',
           frameRate: { ideal: 60, max: 60 },
           width: isGame ? { ideal: 1280, max: 1280 } : { ideal: 1920, max: 3840 },
           height: isGame ? { ideal: 720, max: 720 } : { ideal: 1080, max: 2160 },
