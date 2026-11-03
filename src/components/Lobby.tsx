@@ -7,6 +7,7 @@ import {
   Copy,
   Dices,
   DoorOpen,
+  Download,
   Headphones,
   Link2,
   LoaderCircle,
@@ -37,6 +38,7 @@ interface LobbyProps {
 }
 
 export function Lobby({ joining, onJoin, onToast }: LobbyProps) {
+  const isElectron = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
   const [nickname, setNickname] = useState(() => localStorage.getItem(NICK_KEY) ?? '')
   const [roomName, setRoomName] = useState(() => getRoomFromUrl() || randomRoomName())
   const [isInvited] = useState(() => hasRoomInUrl())
@@ -113,13 +115,28 @@ export function Lobby({ joining, onJoin, onToast }: LobbyProps) {
 
       <main className="relative z-10 w-full max-w-md animate-fade-up overflow-hidden rounded-2xl border border-white/5 bg-dc-dark/90 shadow-2xl shadow-black/60 backdrop-blur-xl">
         <section className="p-7 sm:p-8">
-          <div className="mb-6 flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-dc-brand-soft to-dc-brand-hover shadow-lg shadow-dc-brand/30">
-              <Headphones size={22} className="text-white" />
+          <div className="mb-6 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-dc-brand-soft to-dc-brand-hover shadow-lg shadow-dc-brand/30">
+                <Headphones size={22} className="text-white" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-extrabold tracking-tight text-dc-header">Discordia</h1>
+              </div>
             </div>
-            <div>
-              <h1 className="text-2xl font-extrabold tracking-tight text-dc-header">Discordia</h1>
-            </div>
+
+            {!isElectron && (
+              <a
+                href="https://github.com/Pancheski/discordia/releases/latest/download/Discordia-Setup.exe"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-dc-brand/40 bg-dc-brand/15 px-3 py-1.5 text-xs font-bold text-dc-brand-soft shadow-sm transition hover:bg-dc-brand hover:text-white"
+                title="Baixar instalador oficial para Windows (.exe)"
+              >
+                <Download size={14} />
+                <span>Baixar App</span>
+              </a>
+            )}
           </div>
 
           {isInvited && (

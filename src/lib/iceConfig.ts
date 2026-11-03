@@ -11,6 +11,9 @@ export const DEFAULT_STUN_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun4.l.google.com:19302' },
 ]
 
+export const DEFAULT_METERED_DOMAIN = 'vdeaviao.metered.live'
+export const DEFAULT_METERED_API_KEY = 'sk_secret_a7f62fca1c8df8b2235ccf980c4fd0962ee1b6d8b490ba5b39cfa234e1fa0e96'
+
 let cachedIceServers: RTCIceServer[] | null = null
 
 /**
@@ -27,9 +30,9 @@ export async function getIceServers(): Promise<RTCIceServer[]> {
 
   const servers: RTCIceServer[] = [...DEFAULT_STUN_SERVERS]
 
-  // 1. Verifica se há credenciais da API Metered.ca
-  const meteredDomain = import.meta.env.VITE_METERED_DOMAIN as string | undefined
-  const meteredApiKey = import.meta.env.VITE_METERED_API_KEY as string | undefined
+  // 1. Verifica se há credenciais da API Metered.ca (com fallback padrão)
+  const meteredDomain = (import.meta.env.VITE_METERED_DOMAIN as string | undefined) || DEFAULT_METERED_DOMAIN
+  const meteredApiKey = (import.meta.env.VITE_METERED_API_KEY as string | undefined) || DEFAULT_METERED_API_KEY
 
   if (meteredDomain && meteredApiKey) {
     try {
@@ -89,7 +92,7 @@ export function hasTurnConfigured(): boolean {
   if (!cachedIceServers) {
     return !!(
       (import.meta.env.VITE_TURN_URLS && import.meta.env.VITE_TURN_USERNAME) ||
-      (import.meta.env.VITE_METERED_DOMAIN && import.meta.env.VITE_METERED_API_KEY)
+      (import.meta.env.VITE_METERED_DOMAIN || DEFAULT_METERED_DOMAIN)
     )
   }
   return cachedIceServers.some((s) => {

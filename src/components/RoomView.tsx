@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Eye, Gamepad2, Hash, Maximize2, MessageSquare, MicOff, MonitorUp, Power, Rocket, Users, Volume2, VolumeX } from 'lucide-react'
+import { Download, Eye, Gamepad2, Hash, Maximize2, MessageSquare, MicOff, MonitorUp, Power, Rocket, Users, Volume2, VolumeX } from 'lucide-react'
 import { AppLauncherModal } from './AppLauncherModal'
 import { AudioSink } from './AudioSink'
 import { ChatSidebar } from './ChatSidebar'
@@ -403,6 +403,19 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
               </button>
             )}
 
+            {!isElectron && (
+              <a
+                href="https://github.com/Pancheski/discordia/releases/latest/download/Discordia-Setup.exe"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-dc-brand/40 bg-dc-brand/15 px-2.5 py-1.5 text-xs font-bold text-dc-brand-soft shadow-sm transition hover:bg-dc-brand hover:text-white"
+                title="Baixar instalador oficial para Windows (.exe)"
+              >
+                <Download size={14} />
+                <span className="hidden sm:inline">Baixar App</span>
+              </a>
+            )}
+
             <button
               type="button"
               onClick={() => {
@@ -417,8 +430,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
               title="Remote Play"
             >
               <Gamepad2 size={15} />
-              <span className="hidden lg:inline">Liberar Controle</span>
-              <span className="lg:hidden">Remote Play</span>
+              <span>Remote Play</span>
             </button>
 
             <span className="flex items-center gap-1.5 rounded-full bg-dc-darker px-2.5 py-1 text-xs text-dc-muted">
@@ -617,20 +629,51 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
               </div>
             </>
           ) : (
-            <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto">
-              <div className="mx-auto grid w-full max-w-6xl grid-cols-2 gap-4 md:grid-cols-3">
-                {tiles.map(({ key, screenId, voiceVolume, ...t }) => (
-                  <ParticipantTile
-                    key={key}
-                    {...t}
-                    voiceVolume={voiceVolume}
-                    onVoiceVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'mic', v) : undefined}
-                    onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
-                    isWatchingScreen={false}
-                    onChallengeRps={challengeRps}
-                  />
-                ))}
-              </div>
+            <div className="flex h-full w-full min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
+              {tiles.length === 1 ? (
+                (() => {
+                  const { key, screenId, voiceVolume, ...t } = tiles[0]
+                  return (
+                    <div className="flex w-full max-w-2xl items-center justify-center my-auto">
+                      <div className="w-full max-w-2xl aspect-video">
+                        <ParticipantTile
+                          key={key}
+                          {...t}
+                          voiceVolume={voiceVolume}
+                          onVoiceVolumeChange={
+                            !t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'mic', v) : undefined
+                          }
+                          onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
+                          isWatchingScreen={false}
+                          onChallengeRps={challengeRps}
+                        />
+                      </div>
+                    </div>
+                  )
+                })()
+              ) : (
+                <div
+                  className={`w-full my-auto ${
+                    tiles.length === 2
+                      ? 'grid grid-cols-1 md:grid-cols-2 gap-4 max-w-5xl'
+                      : tiles.length <= 4
+                        ? 'grid grid-cols-2 gap-4 max-w-5xl'
+                        : 'grid grid-cols-2 lg:grid-cols-3 gap-4 max-w-6xl'
+                  }`}
+                >
+                  {tiles.map(({ key, screenId, voiceVolume, ...t }) => (
+                    <ParticipantTile
+                      key={key}
+                      {...t}
+                      voiceVolume={voiceVolume}
+                      onVoiceVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'mic', v) : undefined}
+                      onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
+                      isWatchingScreen={false}
+                      onChallengeRps={challengeRps}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </section>

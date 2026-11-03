@@ -500,16 +500,20 @@ class NoopPresence implements PresenceProvider {
   prune(): void {}
 }
 
-// ─── Fábrica (configurada via .env) ────────────────────────────────────
+// ─── Fábrica (configurada via .env com fallbacks universais) ───────────
+
+export const DEFAULT_FIREBASE_DB_URL = 'https://discordia-380f0-default-rtdb.firebaseio.com'
+export const DEFAULT_PRESENCE_PROVIDER = 'firebase'
+export const DEFAULT_PRESENCE_ROOT = 'discordia_rooms'
 
 let provider: PresenceProvider | null = null
 
 export function getPresence(): PresenceProvider {
   if (provider) return provider
   const env = import.meta.env
-  const requested = String(env.VITE_PRESENCE_PROVIDER ?? '').trim().toLowerCase()
-  const dbUrl = String(env.VITE_FIREBASE_DATABASE_URL ?? '').trim()
-  const root = String(env.VITE_PRESENCE_ROOT ?? 'discordia_rooms').trim().replace(/^\/+|\/+$/g, '') || 'discordia_rooms'
+  const requested = String(env.VITE_PRESENCE_PROVIDER || DEFAULT_PRESENCE_PROVIDER).trim().toLowerCase()
+  const dbUrl = String(env.VITE_FIREBASE_DATABASE_URL || DEFAULT_FIREBASE_DB_URL).trim()
+  const root = String(env.VITE_PRESENCE_ROOT || DEFAULT_PRESENCE_ROOT).trim().replace(/^\/+|\/+$/g, '') || DEFAULT_PRESENCE_ROOT
 
   if (requested === 'off') {
     provider = new NoopPresence()
@@ -521,6 +525,6 @@ export function getPresence(): PresenceProvider {
     }
     provider = new LocalPresence()
   }
-  console.info(`[discordia] Presença de salas: ${provider.kind}`)
+  console.info(`[discordia] Presença de salas: ${provider.kind} (root: ${root})`)
   return provider
 }
