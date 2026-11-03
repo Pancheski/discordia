@@ -6,7 +6,7 @@ import net from 'node:net'
 import path from 'node:path'
 
 interface GamepadPacket {
-  type: 'gamepad:state' | 'gamepad:release' | 'gamepad:connect' | 'gamepad:disconnect'
+  type: 'gamepad:state' | 'gamepad:release' | 'gamepad:connect' | 'gamepad:disconnect' | 'driver:install'
   player?: number
   slot?: number
   buttons?: number[]

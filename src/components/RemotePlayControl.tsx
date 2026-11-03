@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Check, Download, Gamepad2, Power, ShieldCheck, UserCheck } from 'lucide-react'
+import { AlertTriangle, Check, Download, Gamepad2, Power, ShieldCheck, UserCheck, Wrench } from 'lucide-react'
 import { Modal } from './Modal'
 import { useGamepadCapture } from '../hooks/useGamepadCapture'
 import type { GamepadStatePayload, RemoteParticipant, RemotePlayGrant } from '../types'
@@ -9,12 +9,15 @@ interface RemotePlayControlProps {
   participants: RemoteParticipant[]
   grant: RemotePlayGrant | null
   companionConnected: boolean
+  driverReady?: boolean
+  installingDriver?: boolean
   modalOpen: boolean
   onCloseModal: () => void
   onGrantGuest: (guestId: string | null) => void
   onRevokeGuest?: (guestId: string) => void
   onSendGamepadState: (payload: GamepadStatePayload) => void
   onRetryCompanion: () => void
+  onInstallDriver?: () => void
 }
 
 const BUTTON_BADGES: { index: number; label: string; color: string }[] = [
@@ -45,16 +48,19 @@ export function RemotePlayControl({
   participants,
   grant,
   companionConnected,
+  driverReady = true,
+  installingDriver = false,
   modalOpen,
   onCloseModal,
   onGrantGuest,
   onRevokeGuest,
   onSendGamepadState,
   onRetryCompanion,
+  onInstallDriver,
 }: RemotePlayControlProps) {
   const [hudExpanded, setHudExpanded] = useState(true)
   const isNativeDesktop = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
-  const hostReady = isNativeDesktop || companionConnected
+  const hostReady = (isNativeDesktop || companionConnected) && driverReady !== false
 
   const controllers = grant?.controllers || {}
   const activeCount = Object.keys(controllers).length
@@ -125,16 +131,14 @@ export function RemotePlayControl({
 
             <div className="flex items-center gap-2">
               <span
-                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
-                  livePad.connected
+                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${livePad.connected
                     ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/30'
                     : 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-400/30'
-                }`}
+                  }`}
               >
                 <span
-                  className={`h-1.5 w-1.5 rounded-full ${
-                    livePad.connected ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'
-                  }`}
+                  className={`h-1.5 w-1.5 rounded-full ${livePad.connected ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'
+                    }`}
                 />
                 {livePad.connected ? 'Controle conectado' : 'Pressione qualquer botão no controle'}
               </span>
@@ -157,11 +161,10 @@ export function RemotePlayControl({
                   return (
                     <span
                       key={btn.index}
-                      className={`inline-flex h-6 min-w-6 items-center justify-center rounded px-1.5 font-mono text-[10px] font-extrabold transition-all ${
-                        active
+                      className={`inline-flex h-6 min-w-6 items-center justify-center rounded px-1.5 font-mono text-[10px] font-extrabold transition-all ${active
                           ? `${btn.color} scale-110 shadow-[0_0_10px_rgba(52,211,153,0.5)]`
                           : 'bg-white/5 text-dc-muted opacity-55'
-                      }`}
+                        }`}
                     >
                       {btn.label}
                       {(btn.index === 6 || btn.index === 7) && active ? ` ${Math.round(val * 100)}%` : ''}
@@ -235,7 +238,7 @@ export function RemotePlayControl({
         }
       >
         <div className="space-y-4">
-          {!isNativeDesktop && (
+          {(!isNativeDesktop || !driverReady) && (
             <div
               className={`flex items-center justify-between gap-3 rounded-xl border p-3 text-xs transition-colors ${
                 hostReady
@@ -243,16 +246,41 @@ export function RemotePlayControl({
                   : 'border-amber-500/40 bg-amber-500/10 text-amber-100'
               }`}
             >
-              <div className="flex items-center gap-2.5">
-                <ShieldCheck
-                  size={18}
-                  className={hostReady ? 'shrink-0 text-emerald-400' : 'shrink-0 text-amber-400'}
-                />
-                <span className="font-bold text-white">
-                  {hostReady ? '🟢 Pronto para jogar' : 'Desconectado'}
-                </span>
+              <div className="flex items-center gap-2.5 min-w-0">
+                {hostReady ? (
+                  <ShieldCheck size={18} className="shrink-0 text-emerald-400" />
+                ) : (
+                  <AlertTriangle size={18} className="shrink-0 text-amber-400" />
+                )}
+                <div className="min-w-0">
+                  <span className="font-bold text-white block">
+                    {hostReady
+                      ? '🟢 Pronto para jogar'
+                      : companionConnected || isNativeDesktop
+                        ? 'Driver de Controle não detectado'
+                        : 'Desconectado'}
+                  </span>
+                  {!hostReady && (companionConnected || isNativeDesktop) && (
+                    <span className="text-[11px] text-amber-200/80">
+                      Necessário para emular controles Xbox 360 no Windows.
+                    </span>
+                  )}
+                </div>
               </div>
-              {!hostReady && (
+
+              {!hostReady && (companionConnected || isNativeDesktop) && onInstallDriver && (
+                <button
+                  type="button"
+                  disabled={installingDriver}
+                  onClick={onInstallDriver}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-black transition hover:bg-amber-400 disabled:opacity-50"
+                >
+                  <Wrench size={13} className={installingDriver ? 'animate-spin' : ''} />
+                  <span>{installingDriver ? 'Instalando...' : '⚙️ Instalar Driver de Controle (1 clique)'}</span>
+                </button>
+              )}
+
+              {!hostReady && !companionConnected && !isNativeDesktop && (
                 <a
                   href={HOST_EXE_URL}
                   target="_blank"
@@ -286,11 +314,10 @@ export function RemotePlayControl({
                   return (
                     <li
                       key={p.peerId}
-                      className={`flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 transition ${
-                        isAssigned
+                      className={`flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 transition ${isAssigned
                           ? 'border-emerald-400/60 bg-emerald-500/15'
                           : 'border-white/10 bg-dc-darkest hover:border-white/20'
-                      }`}
+                        }`}
                     >
                       <div className="flex min-w-0 items-center gap-2.5">
                         <UserCheck size={16} className={isAssigned ? 'text-emerald-400' : 'text-dc-muted'} />
@@ -327,11 +354,10 @@ export function RemotePlayControl({
                             onRetryCompanion()
                             onGrantGuest(p.peerId)
                           }}
-                          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                            activeCount >= 4
+                          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${activeCount >= 4
                               ? 'cursor-not-allowed bg-white/5 text-dc-muted'
                               : 'bg-dc-brand text-white hover:bg-dc-brand/90'
-                          }`}
+                            }`}
                         >
                           <Gamepad2 size={14} />
                           {activeCount >= 4 ? 'Limite (4/4)' : 'Liberar Controle'}

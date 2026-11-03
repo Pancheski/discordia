@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { EyeOff, Film, Gamepad2, Maximize2, Minimize2, MonitorUp, VolumeX, Zap } from 'lucide-react'
+import { EyeOff, Film, Maximize2, Minimize2, MonitorUp, VolumeX, Zap } from 'lucide-react'
 import { useMediaStream } from '../hooks/useMediaStream'
 import type { ScreenSharePreset } from '../types'
 import { VolumeSlider } from './VolumeSlider'
@@ -19,7 +19,6 @@ interface ScreenStageProps {
   onPresetChange?: (preset: ScreenSharePreset) => void
   onVolumeChange: (value: number) => void
   onStopWatching?: () => void
-  onOpenRemotePlay?: () => void
 }
 
 export function ScreenStage({
@@ -28,7 +27,6 @@ export function ScreenStage({
   onPresetChange,
   onVolumeChange,
   onStopWatching,
-  onOpenRemotePlay,
 }: ScreenStageProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const videoRef = useMediaStream<HTMLVideoElement>(screen.stream)
@@ -158,17 +156,6 @@ export function ScreenStage({
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          {onOpenRemotePlay && (
-            <button
-              type="button"
-              onClick={onOpenRemotePlay}
-              className="pointer-events-auto inline-flex items-center gap-1.5 rounded-md border border-emerald-400/35 bg-emerald-600/80 px-2.5 py-1.5 text-xs font-bold text-white backdrop-blur transition hover:bg-emerald-500"
-              title="Liberar Controle (Remote Play)"
-            >
-              <Gamepad2 size={14} />
-              <span className="hidden md:inline">Liberar Controle</span>
-            </button>
-          )}
           {onStopWatching && (
             <button
               type="button"

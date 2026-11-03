@@ -4,11 +4,11 @@ Discordia Host — Agente de Controle Virtual Xbox 360 (System Tray / Background
 ===============================================================================
 
 Roda silenciosamente em segundo plano na bandeja do Windows (System Tray),
-escutando em `ws://127.0.0.1:8765` e emulando um controle Xbox 360 virtual via
-ViGEmBus (`vgamepad`) para o recurso Remote Play / Jogar Junto do Discordia.
+escutando em `ws://127.0.0.1:8765` e emulando até 4 controles Xbox 360 virtuais
+via ViGEmBus (`vgamepad`) para o recurso Remote Play / Jogar Junto do Discordia.
 
-Para gerar o executável único `DiscordiaHost.exe` (sem janela de terminal):
-  Execute `build_companion.bat` (1 clique no Windows).
+Inclui lazy-loading do driver ViGEmBus e auto-instalação de 1 clique sem crashes
+caso o driver ainda não esteja presente no Windows.
 """
 
 import asyncio
@@ -16,12 +16,13 @@ import ctypes
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 import websockets
-import vgamepad as vg
 
 # Suporte opcional para ícone na Bandeja do Sistema (System Tray)
 try:
@@ -43,25 +44,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger("discordia_host")
 
-# Mapeamento do índice padrão W3C Standard Gamepad -> Botões XInput (vgamepad.XUSB_BUTTON)
+
+def silent_exception_hook(exc_type, exc_value, exc_traceback):
+    """Garante que exceções não tratadas nunca abram pop-ups de erro no Windows."""
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logger.error("Exceção não tratada capturada (silenciosa):", exc_info=(exc_type, exc_value, exc_traceback))
+
+
+sys.excepthook = silent_exception_hook
+
+# Mapeamento do índice padrão W3C Standard Gamepad -> Constantes XInput / vgamepad.XUSB_BUTTON
 XINPUT_BUTTON_MAP = {
-    0: vg.XUSB_BUTTON.XUSB_GAMEPAD_A,
-    1: vg.XUSB_BUTTON.XUSB_GAMEPAD_B,
-    2: vg.XUSB_BUTTON.XUSB_GAMEPAD_X,
-    3: vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
-    4: vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_SHOULDER,
-    5: vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER,
+    0: 0x1000,  # XUSB_GAMEPAD_A
+    1: 0x2000,  # XUSB_GAMEPAD_B
+    2: 0x4000,  # XUSB_GAMEPAD_X
+    3: 0x8000,  # XUSB_GAMEPAD_Y
+    4: 0x0100,  # XUSB_GAMEPAD_LEFT_SHOULDER
+    5: 0x0200,  # XUSB_GAMEPAD_RIGHT_SHOULDER
     # 6 = LT (gatilho analógico esquerdo)
     # 7 = RT (gatilho analógico direito)
-    8: vg.XUSB_BUTTON.XUSB_GAMEPAD_BACK,
-    9: vg.XUSB_BUTTON.XUSB_GAMEPAD_START,
-    10: vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_THUMB,
-    11: vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_THUMB,
-    12: vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP,
-    13: vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
-    14: vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_LEFT,
-    15: vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_RIGHT,
-    16: vg.XUSB_BUTTON.XUSB_GAMEPAD_GUIDE,
+    8: 0x0020,  # XUSB_GAMEPAD_BACK
+    9: 0x0010,  # XUSB_GAMEPAD_START
+    10: 0x0040, # XUSB_GAMEPAD_LEFT_THUMB
+    11: 0x0080, # XUSB_GAMEPAD_RIGHT_THUMB
+    12: 0x0001, # XUSB_GAMEPAD_DPAD_UP
+    13: 0x0002, # XUSB_GAMEPAD_DPAD_DOWN
+    14: 0x0004, # XUSB_GAMEPAD_DPAD_LEFT
+    15: 0x0008, # XUSB_GAMEPAD_DPAD_RIGHT
+    16: 0x0400, # XUSB_GAMEPAD_GUIDE
 }
 
 
@@ -98,56 +110,206 @@ def ensure_single_instance() -> Optional[int]:
         return None
 
 
+# ─── Lazy Loading do ViGEmBus e Auto-Instalação ──────────────────────────────
+
+_vg_module: Any = None
+_driver_ready: bool = False
+
+
+def find_vigem_msi() -> Optional[str]:
+    """Localiza o instalador ViGEmBusSetup_x64.msi embutido ou nos diretórios da aplicação."""
+    search_dirs: List[str] = []
+
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            search_dirs.append(meipass)
+            search_dirs.append(os.path.join(meipass, "vgamepad"))
+        exe_dir = os.path.dirname(sys.executable)
+        search_dirs.append(exe_dir)
+        search_dirs.append(os.path.join(exe_dir, "resources"))
+        search_dirs.append(os.path.join(exe_dir, "vgamepad"))
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    search_dirs.append(script_dir)
+    search_dirs.append(os.path.join(script_dir, "vgamepad"))
+
+    for base_dir in search_dirs:
+        if not os.path.exists(base_dir):
+            continue
+        candidates = [
+            os.path.join(base_dir, "vgamepad", "win", "vigem", "install", "x64", "ViGEmBusSetup_x64.msi"),
+            os.path.join(base_dir, "win", "vigem", "install", "x64", "ViGEmBusSetup_x64.msi"),
+            os.path.join(base_dir, "vigem", "install", "x64", "ViGEmBusSetup_x64.msi"),
+            os.path.join(base_dir, "ViGEmBusSetup_x64.msi"),
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                logger.info("ViGEmBusSetup_x64.msi localizado em: %s", c)
+                return os.path.abspath(c)
+
+        for root, _dirs, files in os.walk(base_dir):
+            for file in files:
+                if file.lower() == "vigembussetup_x64.msi":
+                    found = os.path.abspath(os.path.join(root, file))
+                    logger.info("ViGEmBusSetup_x64.msi localizado via busca em: %s", found)
+                    return found
+
+    return None
+
+
+def get_vgamepad():
+    """Tenta importar vgamepad de forma lazy e segura sem quebrar o servidor WebSocket."""
+    global _vg_module, _driver_ready
+    if _vg_module is not None:
+        return _vg_module
+    try:
+        import vgamepad as vg
+        _vg_module = vg
+        _driver_ready = True
+        logger.info("Driver ViGEmBus e módulo vgamepad carregados com sucesso!")
+        return _vg_module
+    except Exception as e:
+        logger.warning("ViGEmBus não detectado ou indisponível: %s", e)
+        _vg_module = None
+        _driver_ready = False
+        return None
+
+
+def is_driver_ready() -> bool:
+    """Retorna True se o driver ViGEmBus estiver pronto e funcional no sistema."""
+    global _driver_ready
+    if _driver_ready and _vg_module is not None:
+        return True
+    mod = get_vgamepad()
+    return mod is not None
+
+
+def install_vigem_driver() -> bool:
+    """Dispara a instalação silenciosa/passiva e com elevação (UAC) do driver ViGEmBus."""
+    global _vg_module, _driver_ready
+    msi_path = find_vigem_msi()
+    if not msi_path:
+        logger.error("ViGEmBusSetup_x64.msi não foi encontrado no bundle.")
+        return False
+
+    logger.info("Executando instalação com UAC do ViGEmBus: %s", msi_path)
+    try:
+        cmd = f'Start-Process msiexec.exe -ArgumentList \'/i "{msi_path}" /passive /norestart\' -Verb RunAs -Wait'
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+            capture_output=True,
+            timeout=180,
+        )
+        logger.info("Processo msiexec finalizado via PowerShell com código: %s", res.returncode)
+    except Exception as e:
+        logger.warning("Falha ao aguardar via PowerShell, tentando ShellExecuteW: %s", e)
+        try:
+            ctypes.windll.shell32.ShellExecuteW(None, "runas", "msiexec.exe", f'/i "{msi_path}" /passive /norestart', None, 1)
+            time.sleep(6)
+        except Exception as e2:
+            logger.error("Erro ao invocar ShellExecuteW: %s", e2)
+            return False
+
+    time.sleep(3)
+
+    # Limpa cache do módulo se o import falhou antes
+    for mod_name in list(sys.modules.keys()):
+        if "vgamepad" in mod_name:
+            del sys.modules[mod_name]
+    _vg_module = None
+    _driver_ready = False
+
+    return is_driver_ready()
+
+
+def ensure_vigem_driver(auto_install: bool = False) -> bool:
+    """Garante que o driver esteja pronto, efetuando auto-instalação opcional."""
+    if is_driver_ready():
+        return True
+    if auto_install:
+        return install_vigem_driver()
+    return False
+
+
+# ─── Emulação de Controles Xbox 360 Virtuais ────────────────────────────────
+
 class Xbox360Emulator:
     def __init__(self, slot: int = 1) -> None:
         self.slot = slot
-        logger.info("Inicializando controle virtual Xbox 360 (Slot %d) via ViGEmBus...", slot)
-        self.gamepad = vg.VX360Gamepad()
-        self.reset()
-        logger.info("Controle Xbox 360 Virtual pronto no Windows (Slot %d)!", slot)
+        self.gamepad = None
+        self._init_gamepad()
+
+    def _init_gamepad(self) -> bool:
+        if self.gamepad is not None:
+            return True
+        vg = get_vgamepad()
+        if not vg:
+            return False
+        try:
+            logger.info("Inicializando controle virtual Xbox 360 (Slot %d) via ViGEmBus...", self.slot)
+            self.gamepad = vg.VX360Gamepad()
+            self.reset()
+            logger.info("Controle Xbox 360 Virtual pronto no Windows (Slot %d)!", self.slot)
+            return True
+        except Exception as e:
+            logger.error("Falha ao inicializar VX360Gamepad no Slot %d: %s", self.slot, e)
+            self.gamepad = None
+            return False
 
     def reset(self) -> None:
         """Solta todos os botões, gatilhos e analógicos imediatamente."""
-        self.gamepad.reset()
-        self.gamepad.update()
+        if self.gamepad:
+            try:
+                self.gamepad.reset()
+                self.gamepad.update()
+            except Exception:
+                pass
 
     def apply_state(self, payload: Dict[str, Any]) -> None:
+        if not self.gamepad:
+            if not self._init_gamepad():
+                return
+
         buttons: List[float] = payload.get("buttons") or []
         axes: List[float] = payload.get("axes") or [0.0, 0.0, 0.0, 0.0]
         triggers: List[float] = payload.get("triggers") or []
 
-        # 1) Atualiza botões digitais XInput
-        for idx, xusb_btn in XINPUT_BUTTON_MAP.items():
-            pressed = idx < len(buttons) and float(buttons[idx]) > 0.5
-            if pressed:
-                self.gamepad.press_button(button=xusb_btn)
+        try:
+            # 1) Atualiza botões digitais XInput
+            for idx, xusb_btn in XINPUT_BUTTON_MAP.items():
+                pressed = idx < len(buttons) and float(buttons[idx]) > 0.5
+                if pressed:
+                    self.gamepad.press_button(button=xusb_btn)
+                else:
+                    self.gamepad.release_button(button=xusb_btn)
+
+            # 2) Atualiza gatilhos analógicos (LT = índice 6, RT = índice 7)
+            lt_val = float(triggers[0]) if len(triggers) >= 1 else (float(buttons[6]) if len(buttons) > 6 else 0.0)
+            rt_val = float(triggers[1]) if len(triggers) >= 2 else (float(buttons[7]) if len(buttons) > 7 else 0.0)
+            lt_clamped = clamp(lt_val, 0.0, 1.0)
+            rt_clamped = clamp(rt_val, 0.0, 1.0)
+
+            if hasattr(self.gamepad, "left_trigger_float"):
+                self.gamepad.left_trigger_float(value_float=lt_clamped)
+                self.gamepad.right_trigger_float(value_float=rt_clamped)
             else:
-                self.gamepad.release_button(button=xusb_btn)
+                self.gamepad.left_trigger(value=int(round(lt_clamped * 255)))
+                self.gamepad.right_trigger(value=int(round(rt_clamped * 255)))
 
-        # 2) Atualiza gatilhos analógicos (LT = índice 6, RT = índice 7)
-        lt_val = float(triggers[0]) if len(triggers) >= 1 else (float(buttons[6]) if len(buttons) > 6 else 0.0)
-        rt_val = float(triggers[1]) if len(triggers) >= 2 else (float(buttons[7]) if len(buttons) > 7 else 0.0)
-        lt_clamped = clamp(lt_val, 0.0, 1.0)
-        rt_clamped = clamp(rt_val, 0.0, 1.0)
+            # 3) Atualiza analógicos (No navegador, Y negativo é para cima; no XInput, Y positivo é para cima)
+            lx = clamp(float(axes[0]) if len(axes) > 0 else 0.0, -1.0, 1.0)
+            ly = clamp(-float(axes[1]) if len(axes) > 1 else 0.0, -1.0, 1.0)
+            rx = clamp(float(axes[2]) if len(axes) > 2 else 0.0, -1.0, 1.0)
+            ry = clamp(-float(axes[3]) if len(axes) > 3 else 0.0, -1.0, 1.0)
 
-        if hasattr(self.gamepad, "left_trigger_float"):
-            self.gamepad.left_trigger_float(value_float=lt_clamped)
-            self.gamepad.right_trigger_float(value_float=rt_clamped)
-        else:
-            self.gamepad.left_trigger(value=int(round(lt_clamped * 255)))
-            self.gamepad.right_trigger(value=int(round(rt_clamped * 255)))
+            self.gamepad.left_joystick_float(x_value_float=lx, y_value_float=ly)
+            self.gamepad.right_joystick_float(x_value_float=rx, y_value_float=ry)
 
-        # 3) Atualiza analógicos (No navegador, Y negativo é para cima; no XInput, Y positivo é para cima)
-        lx = clamp(float(axes[0]) if len(axes) > 0 else 0.0, -1.0, 1.0)
-        ly = clamp(-float(axes[1]) if len(axes) > 1 else 0.0, -1.0, 1.0)
-        rx = clamp(float(axes[2]) if len(axes) > 2 else 0.0, -1.0, 1.0)
-        ry = clamp(-float(axes[3]) if len(axes) > 3 else 0.0, -1.0, 1.0)
-
-        self.gamepad.left_joystick_float(x_value_float=lx, y_value_float=ly)
-        self.gamepad.right_joystick_float(x_value_float=rx, y_value_float=ry)
-
-        # 4) Envia pacote de estado para o driver ViGEmBus
-        self.gamepad.update()
+            # 4) Envia pacote de estado para o driver ViGEmBus
+            self.gamepad.update()
+        except Exception as e:
+            logger.error("Erro ao aplicar estado no gamepad do Slot %d: %s", self.slot, e)
 
 
 class MultiGamepadManager:
@@ -161,12 +323,14 @@ class MultiGamepadManager:
             slot = 1
         if slot not in self.controllers:
             try:
-                logger.info("Criando controle virtual Xbox 360 no Slot %d...", slot)
                 self.controllers[slot] = Xbox360Emulator(slot=slot)
             except Exception as e:
                 logger.error("Falha ao instanciar controle virtual no Slot %d: %s", slot, e)
                 return None
-        return self.controllers.get(slot)
+        ctrl = self.controllers.get(slot)
+        if ctrl and ctrl.gamepad is None:
+            ctrl._init_gamepad()
+        return ctrl
 
     def disconnect(self, slot: int) -> None:
         ctrl = self.controllers.pop(slot, None)
@@ -221,8 +385,6 @@ def create_tray_icon_image() -> "Image.Image":
 class CompanionServer:
     def __init__(self) -> None:
         self.manager = MultiGamepadManager()
-        # Inicializa o Slot 1 de antemão
-        self.manager.get_or_create(1)
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.stop_event: Optional[asyncio.Event] = None
         self.tray_icon: Any = None
@@ -230,6 +392,18 @@ class CompanionServer:
     async def handle_client(self, websocket: Any) -> None:
         peer = getattr(websocket, "remote_address", ("127.0.0.1", 0))
         logger.info("Discordia conectado (%s).", peer)
+
+        # Envia status do driver para o cliente Web/Desktop imediatamente na conexão
+        try:
+            await websocket.send(
+                json.dumps({
+                    "type": "companion:status",
+                    "driverReady": is_driver_ready(),
+                })
+            )
+        except Exception:
+            pass
+
         try:
             async for raw_message in websocket:
                 try:
@@ -255,8 +429,24 @@ class CompanionServer:
                             self.manager.reset_all()
                     else:
                         self.manager.reset_all()
+                elif msg_type == "driver:install":
+                    logger.info("Solicitação de instalação do driver ViGEmBus recebida via WebSocket.")
+                    success = install_vigem_driver()
+                    await websocket.send(
+                        json.dumps({
+                            "type": "companion:status",
+                            "driverReady": success,
+                            "installed": True,
+                        })
+                    )
                 elif msg_type == "gamepad:ping":
-                    await websocket.send(json.dumps({"type": "gamepad:pong", "status": "ready"}))
+                    await websocket.send(
+                        json.dumps({
+                            "type": "gamepad:pong",
+                            "status": "ready",
+                            "driverReady": is_driver_ready(),
+                        })
+                    )
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
@@ -266,6 +456,7 @@ class CompanionServer:
     async def run_async_server(self) -> None:
         self.loop = asyncio.get_running_loop()
         self.stop_event = asyncio.Event()
+        logger.info("Status do driver ViGEmBus na inicialização: %s", "Pronto" if is_driver_ready() else "Não instalado (aguardando instalação)")
         async with websockets.serve(
             self.handle_client,
             HOST,
@@ -329,3 +520,6 @@ if __name__ == "__main__":
         server.run()
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        logger.error("Erro fatal no DiscordiaHost (ignorado para evitar pop-up): %s", e, exc_info=True)
+        sys.exit(0)

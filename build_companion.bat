@@ -27,7 +27,7 @@ if %ERRORLEVEL% neq 0 (
 echo.
 echo [2/2] Empacotando discordia_companion.py em release\DiscordiaHost.exe (--noconsole)...
 if not exist "release" mkdir "release"
-python -m PyInstaller --noconsole --onefile --clean --distpath "release" --workpath "build\pyinstaller" --name "DiscordiaHost" --collect-all vgamepad --collect-all pystray discordia_companion.py
+python -m PyInstaller --noconsole --onefile --clean --distpath "release" --workpath "build\pyinstaller" --name "DiscordiaHost" --collect-all vgamepad --collect-data vgamepad --collect-all pystray discordia_companion.py
 if %ERRORLEVEL% neq 0 (
     echo [ERRO] Falha ao compilar DiscordiaHost.exe com PyInstaller.
     pause

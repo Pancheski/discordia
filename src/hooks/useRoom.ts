@@ -28,9 +28,16 @@ const INITIAL_WHEEL: WheelState = {
 }
 const IS_ELECTRON = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
 
-const INITIAL_REMOTE_PLAY: { grant: RemotePlayGrant | null; companionConnected: boolean } = {
+const INITIAL_REMOTE_PLAY: {
+  grant: RemotePlayGrant | null
+  companionConnected: boolean
+  driverReady: boolean
+  installingDriver: boolean
+} = {
   grant: null,
   companionConnected: IS_ELECTRON,
+  driverReady: IS_ELECTRON,
+  installingDriver: false,
 }
 
 
@@ -204,6 +211,10 @@ export function useRoom() {
     () => managerRef.current?.connectCompanionBridge(),
     [],
   )
+  const installVigemDriver = useCallback(
+    () => managerRef.current?.installVigemDriver(),
+    [],
+  )
 
   // Garante limpeza ao desmontar (ex.: HMR / navegação)
   useEffect(() => {
@@ -262,6 +273,7 @@ export function useRoom() {
     revokeRemotePlay,
     sendGamepadState,
     connectCompanionBridge,
+    installVigemDriver,
   }
 }
 

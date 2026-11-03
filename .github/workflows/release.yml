@@ -44,7 +44,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-input -r requirements.txt
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          python -m PyInstaller --noconsole --onefile --clean --distpath "release" --workpath "build/pyinstaller" --name "DiscordiaHost" --collect-all vgamepad --collect-all pystray discordia_companion.py
+          python -m PyInstaller --noconsole --onefile --clean --distpath "release" --workpath "build/pyinstaller" --name "DiscordiaHost" --collect-all vgamepad --collect-data vgamepad --collect-all pystray discordia_companion.py
 
       - name: Instalar dependências Node.js
         run: npm ci

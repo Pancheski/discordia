@@ -70,6 +70,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     revokeRemotePlay,
     sendGamepadState,
     connectCompanionBridge,
+    installVigemDriver,
   } = controller
 
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -492,12 +493,15 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           participants={participants}
           grant={remotePlay.grant}
           companionConnected={remotePlay.companionConnected}
+          driverReady={remotePlay.driverReady}
+          installingDriver={remotePlay.installingDriver}
           modalOpen={remotePlayModalOpen}
           onCloseModal={() => setRemotePlayModalOpen(false)}
           onGrantGuest={grantRemotePlay}
           onRevokeGuest={revokeRemotePlay}
           onSendGamepadState={sendGamepadState}
           onRetryCompanion={connectCompanionBridge}
+          onInstallDriver={installVigemDriver}
         />
 
         {local.deafened && (
@@ -590,10 +594,6 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                     onPresetChange={setScreenPreset}
                     onVolumeChange={(v) => !watchedScreen.isLocal && setVolume(watchedScreen.id, 'screen', v)}
                     onStopWatching={handleStopWatchingScreen}
-                    onOpenRemotePlay={() => {
-                      connectCompanionBridge()
-                      setRemotePlayModalOpen(true)
-                    }}
                   />
                 ) : (
                   <>

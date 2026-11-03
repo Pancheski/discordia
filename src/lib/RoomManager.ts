@@ -109,7 +109,12 @@ export interface RoomManagerCallbacks {
   onGolfStroke: (stroke: GolfStrokeEvent | null) => void
   onGolfReset: (reset: GolfResetEvent | null) => void
   onGolfHole: (hole: GolfHoleEvent | null) => void
-  onRemotePlayChange: (state: { grant: RemotePlayGrant | null; companionConnected: boolean }) => void
+  onRemotePlayChange: (state: {
+    grant: RemotePlayGrant | null
+    companionConnected: boolean
+    driverReady: boolean
+    installingDriver: boolean
+  }) => void
 }
 
 const DISCOVERY_INTERVAL_MS = 3000
@@ -168,6 +173,8 @@ export class RoomManager {
   private remotePlayGrant: RemotePlayGrant | null = null
   private companionWs: WebSocket | null = null
   private companionConnected = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
+  private driverReady = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
+  private installingDriver = false
   private companionRetryTimer: number | null = null
   private readonly sentCustomSfxByPeer = new Map<string, Set<string>>()
   private local: LocalState = {
@@ -1005,9 +1012,35 @@ export class RoomManager {
       }
       const wasConnected = this.companionConnected
       this.companionConnected = true
+      try {
+        ws.send(JSON.stringify({ type: 'gamepad:ping' }))
+      } catch {
+        /* ignore */
+      }
       this.notifyRemotePlay()
       if (!wasConnected) {
         this.toast('success', '🟢 Discordia Host detectado — Pronto para jogar!')
+      }
+    }
+
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data as string)
+        if (msg.type === 'companion:status' || msg.type === 'gamepad:pong') {
+          if (typeof msg.driverReady === 'boolean') {
+            const wasReady = this.driverReady
+            this.driverReady = msg.driverReady
+            if (!wasReady && this.driverReady) {
+              this.toast('success', '🟢 Driver ViGEmBus instalado e pronto!')
+            }
+          }
+          if (msg.installed) {
+            this.installingDriver = false
+          }
+          this.notifyRemotePlay()
+        }
+      } catch {
+        /* ignore */
       }
     }
 
@@ -1095,6 +1128,39 @@ export class RoomManager {
     this.companionConnected = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
   }
 
+  installVigemDriver(): void {
+    if (this.destroyed) return
+    this.installingDriver = true
+    this.notifyRemotePlay()
+
+    if (typeof window !== 'undefined' && window.electron?.isElectron) {
+      try {
+        window.electron.sendGamepadState({ type: 'driver:install' })
+        this.toast('info', '⚙️ Iniciando instalação do driver ViGEmBus... Permita a execução do Windows caso solicitado.')
+      } catch {
+        this.installingDriver = false
+        this.notifyRemotePlay()
+      }
+      return
+    }
+
+    if (!this.companionWs || this.companionWs.readyState !== WebSocket.OPEN) {
+      this.connectCompanionBridge()
+      this.toast('warning', 'Conectando ao Discordia Host... Clique novamente em instantes.')
+      this.installingDriver = false
+      this.notifyRemotePlay()
+      return
+    }
+
+    try {
+      this.companionWs.send(JSON.stringify({ type: 'driver:install' }))
+      this.toast('info', '⚙️ Iniciando instalação do driver ViGEmBus... Permita a execução do Windows caso solicitado.')
+    } catch {
+      this.installingDriver = false
+      this.notifyRemotePlay()
+    }
+  }
+
   private notifyRemotePlay(): void {
     this.cb.onRemotePlayChange({
       grant: this.remotePlayGrant
@@ -1104,6 +1170,8 @@ export class RoomManager {
           }
         : null,
       companionConnected: this.companionConnected,
+      driverReady: this.driverReady,
+      installingDriver: this.installingDriver,
     })
   }
 
