@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
-import { Crosshair, Dices, Flag, Minimize2, Power, RotateCcw, Trophy } from 'lucide-react'
+import { Crosshair, Dices, Flag, Minimize2, Power, RotateCcw, Target, Trophy } from 'lucide-react'
 import { playUiSfx } from '../hooks/useAudioSystem'
 import { colorFromString } from '../lib/utils'
 import type { GolfHoleEvent, GolfResetEvent, GolfStrokeEvent } from '../types'
@@ -31,11 +31,14 @@ interface BallSim {
   name: string
   color: string
   x: number
+  y: number
   z: number
   vx: number
   vz: number
   strokes: number
   inHole: boolean
+  lastRestingX?: number
+  lastRestingZ?: number
   mesh?: THREE.Mesh
   labelSprite?: THREE.Sprite
 }
@@ -94,7 +97,6 @@ const WALL_HEIGHT = 0.55
 
 /**
  * Gerador de Números Pseudo-Aleatórios Determinístico Mulberry32
- * Garante que todos os jogadores com a mesma seed gerem exatamente a mesma pista.
  */
 function mulberry32(seed: number) {
   let s = seed | 0
@@ -114,14 +116,13 @@ function generateProceduralCourse(seed: number): GeneratedCourse {
   const pathCoords: Array<{ gx: number; gz: number }> = [{ gx: 0, gz: 0 }]
   const visited = new Set<string>(['0,0'])
 
-  // Comprimento do percurso: 5 a 8 blocos conectados
   const targetLength = 5 + Math.floor(rand() * 4)
 
   const directions = [
     { dx: 0, dz: -1, weight: 5 }, // Norte (avanço para o horizonte)
-    { dx: 1, dz: 0, weight: 2.2 }, // Leste (curva para a direita)
-    { dx: -1, dz: 0, weight: 2.2 }, // Oeste (curva para a esquerda)
-    { dx: 0, dz: 1, weight: 0.8 }, // Sul (raro, recuo suave)
+    { dx: 1, dz: 0, weight: 2.2 }, // Leste
+    { dx: -1, dz: 0, weight: 2.2 }, // Oeste
+    { dx: 0, dz: 1, weight: 0.8 }, // Sul
   ]
 
   for (let i = 1; i < targetLength; i++) {
@@ -204,10 +205,9 @@ function generateProceduralCourse(seed: number): GeneratedCourse {
       openEdges: { north: hasNorth, south: hasSouth, east: hasEast, west: hasWest },
     })
 
-    // Gera paredes externas apenas nas laterais abertas (sem vizinho)
     const wallHalfThick = WALL_THICKNESS / 2
     const tileHalfSize = TILE_SIZE / 2
-    const wallExtension = wallHalfThick // Extensão para encaixe perfeito nos cantos
+    const wallExtension = wallHalfThick
 
     if (!hasNorth) {
       walls.push({
@@ -242,7 +242,6 @@ function generateProceduralCourse(seed: number): GeneratedCourse {
       })
     }
 
-    // Obstáculos específicos por tile intermediário
     if (type === 'bumper') {
       const bumperCount = rand() > 0.45 ? 2 : 1
       if (bumperCount === 1) {
@@ -272,7 +271,6 @@ function generateProceduralCourse(seed: number): GeneratedCourse {
 
   const teeTile = tiles[0]
   const greenTile = tiles[tiles.length - 1]
-
   const par = tiles.length <= 5 ? 3 : tiles.length === 6 ? 4 : 5
 
   return {
@@ -302,7 +300,7 @@ function createNameSprite(name: string, colorHex: string): THREE.Sprite {
   canvas.height = 64
   const ctx = canvas.getContext('2d')
   if (ctx) {
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.88)'
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)'
     ctx.beginPath()
     ctx.roundRect(14, 8, 228, 48, 24)
     ctx.fill()
@@ -339,9 +337,12 @@ export function MiniGolfGame({
 }: MiniGolfGameProps) {
   const mountRef = useRef<HTMLDivElement>(null)
   const ballsRef = useRef<Map<string, BallSim>>(new Map())
-  const lastStrokeSeqRef = useRef(0)
-  const lastResetSeqRef = useRef(0)
-  const lastHoleSeqRef = useRef(0)
+  const lastStrokeSeqRef = useRef(lastStroke?.seq ?? 0)
+  const lastResetSeqRef = useRef(lastReset?.seq ?? 0)
+  const lastHoleSeqRef = useRef(lastHole?.seq ?? 0)
+
+  // Referência para centralizar câmera na bola a partir de botões da interface ou tecla Espaço
+  const centerOnBallRef = useRef<() => void>(() => {})
 
   // Estado sincronizado do buraco e seed
   const [holeNumber, setHoleNumber] = useState(1)
@@ -355,8 +356,11 @@ export function MiniGolfGame({
   const [localMoving, setLocalMoving] = useState(false)
   const [localInHole, setLocalInHole] = useState(false)
 
-  // Referência do curso ativo para a simulação física
   const courseRef = useRef<GeneratedCourse>(generateProceduralCourse(courseSeed))
+  const participantsRef = useRef(participants)
+  useEffect(() => {
+    participantsRef.current = participants
+  }, [participants])
 
   const syncScoreboardUi = useCallback(() => {
     const list = [...ballsRef.current.values()].map((b) => ({
@@ -379,7 +383,24 @@ export function MiniGolfGame({
     setCourseSeed(lastHole.seed)
     setHoleNumber(lastHole.holeNumber)
     setCurrentPar(lastHole.par)
-  }, [lastHole])
+
+    const nextCourse = generateProceduralCourse(lastHole.seed)
+    courseRef.current = nextCourse
+    const entries = [...ballsRef.current.values()]
+    entries.forEach((b, idx) => {
+      const pos = spawnPositionForIndex(nextCourse.tee, idx, entries.length)
+      b.x = pos.x
+      b.y = BALL_RADIUS
+      b.z = pos.z
+      b.lastRestingX = pos.x
+      b.lastRestingZ = pos.z
+      b.vx = 0
+      b.vz = 0
+      b.strokes = 0
+      b.inHole = false
+    })
+    syncScoreboardUi()
+  }, [lastHole, syncScoreboardUi])
 
   // Tratamento de Tacada recebida via P2P
   useEffect(() => {
@@ -394,11 +415,14 @@ export function MiniGolfGame({
         name: lastStroke.name,
         color: colorFromString(lastStroke.peerId),
         x: pos.x,
+        y: BALL_RADIUS,
         z: pos.z,
         vx: 0,
         vz: 0,
         strokes: 0,
         inHole: false,
+        lastRestingX: pos.x,
+        lastRestingZ: pos.z,
       }
       ballsRef.current.set(lastStroke.peerId, ball)
     }
@@ -411,7 +435,7 @@ export function MiniGolfGame({
     syncScoreboardUi()
   }, [lastStroke, participants.length, syncScoreboardUi])
 
-  // Tratamento de Reiniciar Posições
+  // Tratamento de Reiniciar Posições (apenas no mesmo buraco)
   useEffect(() => {
     if (!lastReset || lastReset.seq === lastResetSeqRef.current) return
     lastResetSeqRef.current = lastReset.seq
@@ -419,7 +443,10 @@ export function MiniGolfGame({
     entries.forEach((b, idx) => {
       const pos = spawnPositionForIndex(courseRef.current.tee, idx, entries.length)
       b.x = pos.x
+      b.y = BALL_RADIUS
       b.z = pos.z
+      b.lastRestingX = pos.x
+      b.lastRestingZ = pos.z
       b.vx = 0
       b.vz = 0
       b.strokes = 0
@@ -439,10 +466,25 @@ export function MiniGolfGame({
       setCourseSeed(nextSeed)
       setHoleNumber(nextHoleNum)
       setCurrentPar(nextCourse.par)
+      courseRef.current = nextCourse
+      const entries = [...ballsRef.current.values()]
+      entries.forEach((b, idx) => {
+        const pos = spawnPositionForIndex(nextCourse.tee, idx, entries.length)
+        b.x = pos.x
+        b.y = BALL_RADIUS
+        b.z = pos.z
+        b.lastRestingX = pos.x
+        b.lastRestingZ = pos.z
+        b.vx = 0
+        b.vz = 0
+        b.strokes = 0
+        b.inHole = false
+      })
+      syncScoreboardUi()
     }
-  }, [holeNumber, onSendHole])
+  }, [holeNumber, onSendHole, syncScoreboardUi])
 
-  // Inicialização Three.js, cena modular e física 60fps
+  // ─── Inicialização Three.js, cena modular e física 60fps ─────────────────
   useEffect(() => {
     if (!open) return
     const container = mountRef.current
@@ -457,20 +499,53 @@ export function MiniGolfGame({
     const height = container.clientHeight || 420
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color('#090d16')
-    scene.fog = new THREE.Fog('#090d16', 26, 52)
+    // Fundo limpo e escuro sem neblina
+    scene.background = new THREE.Color('#0b1329')
 
-    // Ajuste dinâmico de câmera para enquadrar perfeitamente a pista gerada
-    const bb = course.boundingBox
-    const midX = (bb.minX + bb.maxX) / 2
-    const midZ = (bb.minZ + bb.maxZ) / 2
-    const spanX = bb.maxX - bb.minX + 4.5
-    const spanZ = bb.maxZ - bb.minZ + 4.5
-    const maxSpan = Math.max(spanX, spanZ, 12)
+    // ─── Câmera Próxima e Sistema de Orbit/Pan/Zoom ─────────────────────────
+    const initialMyBall = ballsMap.get(localPeerId)
+    const cameraTarget = new THREE.Vector3(
+      initialMyBall ? initialMyBall.x : course.tee.x,
+      0,
+      initialMyBall ? initialMyBall.z : course.tee.z,
+    )
 
-    const camera = new THREE.PerspectiveCamera(40, width / height, 0.1, 120)
-    camera.position.set(midX, maxSpan * 1.15 + 3, midZ + maxSpan * 0.9 + 2)
-    camera.lookAt(midX, 0, midZ - 0.2)
+    let cameraRadius = 14
+    let cameraTheta = Math.PI / 3.4 // ~53 graus de elevação
+    let cameraPhi = 0 // Alinhado para olhar para frente (em direção ao -Z)
+    let isTrackingBall = true
+
+    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 150)
+
+    const updateCameraTransform = () => {
+      const sinTheta = Math.sin(cameraTheta)
+      const cosTheta = Math.cos(cameraTheta)
+      const sinPhi = Math.sin(cameraPhi)
+      const cosPhi = Math.cos(cameraPhi)
+
+      camera.position.set(
+        cameraTarget.x + cameraRadius * sinTheta * sinPhi,
+        cameraTarget.y + cameraRadius * cosTheta,
+        cameraTarget.z + cameraRadius * sinTheta * cosPhi,
+      )
+      camera.lookAt(cameraTarget.x, cameraTarget.y + 0.35, cameraTarget.z)
+    }
+
+    updateCameraTransform()
+
+    const centerOnBall = () => {
+      const me = ballsMap.get(localPeerId)
+      if (me) {
+        cameraTarget.set(me.x, 0, me.z)
+      } else {
+        cameraTarget.set(course.tee.x, 0, course.tee.z)
+      }
+      cameraRadius = 14
+      cameraTheta = Math.PI / 3.4
+      cameraPhi = 0
+      isTrackingBall = true
+    }
+    centerOnBallRef.current = centerOnBall
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setSize(width, height)
@@ -480,65 +555,73 @@ export function MiniGolfGame({
     container.innerHTML = ''
     container.appendChild(renderer.domElement)
 
-    // Iluminação Low-Poly Stylized
-    const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x14532d, 0.85)
+    // ─── Iluminação Vívida e Clara ───────────────────────────────────────────
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.95)
+    scene.add(ambientLight)
+
+    const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x166534, 0.75)
     scene.add(hemiLight)
 
-    const sunLight = new THREE.DirectionalLight(0xffedd5, 1.25)
-    sunLight.position.set(midX + 10, 20, midZ + 12)
+    const sunLight = new THREE.DirectionalLight(0xffedd5, 1.35)
+    sunLight.position.set(12, 24, 16)
     sunLight.castShadow = true
-    sunLight.shadow.mapSize.width = 1024
-    sunLight.shadow.mapSize.height = 1024
+    sunLight.shadow.mapSize.width = 2048
+    sunLight.shadow.mapSize.height = 2048
+    sunLight.shadow.camera.near = 0.5
+    sunLight.shadow.camera.far = 80
+    sunLight.shadow.camera.left = -25
+    sunLight.shadow.camera.right = 25
+    sunLight.shadow.camera.top = 25
+    sunLight.shadow.camera.bottom = -25
+    sunLight.shadow.bias = -0.0004
     scene.add(sunLight)
 
     // Grupo de Cenário da Pista
     const courseGroup = new THREE.Group()
     scene.add(courseGroup)
 
-    const woodMaterial = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.65 })
+    const woodMaterial = new THREE.MeshStandardMaterial({ color: 0x9a3412, roughness: 0.6 })
     const bumperMaterial = new THREE.MeshStandardMaterial({
       color: 0xf97316,
-      roughness: 0.3,
+      roughness: 0.25,
       metalness: 0.2,
       emissive: 0x7c2d12,
-      emissiveIntensity: 0.35,
+      emissiveIntensity: 0.4,
     })
     const bumperCapMaterial = new THREE.MeshStandardMaterial({
       color: 0xfde047,
       roughness: 0.2,
-      metalness: 0.8,
+      metalness: 0.85,
     })
-    const sandMaterial = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.95 })
+    const sandMaterial = new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.9 })
 
-    // Renderiza cada Tile da pista
+    // Renderiza cada Tile da pista com cores vivas
     course.tiles.forEach((tile) => {
       const isGreen = tile.type === 'green'
       const isTee = tile.type === 'tee'
       const turfMat = new THREE.MeshStandardMaterial({
-        color: isGreen ? 0x22c55e : (tile.gx + tile.gz) % 2 === 0 ? 0x16a34a : 0x15803d,
-        roughness: 0.82,
+        color: isGreen ? 0x4ade80 : (tile.gx + tile.gz) % 2 === 0 ? 0x22c55e : 0x16a34a,
+        roughness: 0.7,
       })
       const tileMesh = new THREE.Mesh(new THREE.BoxGeometry(TILE_SIZE, 0.2, TILE_SIZE), turfMat)
       tileMesh.position.set(tile.cx, -0.1, tile.cz)
       tileMesh.receiveShadow = true
       courseGroup.add(tileMesh)
 
-      // Marcador no Tee
       if (isTee) {
         const teeMarker = new THREE.Mesh(
-          new THREE.BoxGeometry(1.4, 0.04, 0.6),
-          new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 }),
+          new THREE.BoxGeometry(1.5, 0.04, 0.65),
+          new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3 }),
         )
         teeMarker.position.set(tile.cx, 0.02, tile.cz + 0.3)
         teeMarker.receiveShadow = true
         courseGroup.add(teeMarker)
       }
 
-      // Relevo suave em rampa
       if (tile.type === 'ramp') {
         const rampMesh = new THREE.Mesh(
           new THREE.BoxGeometry(TILE_SIZE * 0.75, 0.16, TILE_SIZE * 0.5),
-          new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.75 }),
+          new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.7 }),
         )
         rampMesh.position.set(tile.cx, 0.06, tile.cz)
         rampMesh.receiveShadow = true
@@ -546,7 +629,7 @@ export function MiniGolfGame({
       }
     })
 
-    // Renderiza Paredes de Madeira Externas (apenas em arestas sem conexão)
+    // Paredes de Madeira Externas (laterais abertas)
     course.walls.forEach((wall) => {
       const w = Math.max(0.01, wall.maxX - wall.minX)
       const d = Math.max(0.01, wall.maxZ - wall.minZ)
@@ -557,7 +640,7 @@ export function MiniGolfGame({
       courseGroup.add(wallMesh)
     })
 
-    // Renderiza Caixas de Areia (Bunkers)
+    // Caixas de Areia (Bunkers)
     course.sandTraps.forEach((sand) => {
       const w = sand.maxX - sand.minX
       const d = sand.maxZ - sand.minZ
@@ -567,7 +650,7 @@ export function MiniGolfGame({
       courseGroup.add(sandMesh)
     })
 
-    // Renderiza Bumpers Cilíndricos
+    // Bumpers Cilíndricos
     course.bumpers.forEach((bumper) => {
       const bumperMesh = new THREE.Mesh(
         new THREE.CylinderGeometry(bumper.radius, bumper.radius, WALL_HEIGHT, 24),
@@ -585,7 +668,7 @@ export function MiniGolfGame({
       courseGroup.add(cap)
     })
 
-    // Renderiza Caixas/Obstáculos internos
+    // Obstáculos Internos de Madeira
     course.obstacleBoxes.forEach((obs) => {
       const w = obs.maxX - obs.minX
       const d = obs.maxZ - obs.minZ
@@ -596,7 +679,7 @@ export function MiniGolfGame({
       courseGroup.add(obsMesh)
     })
 
-    // Buraco + Mastro + Bandeira no Green
+    // Buraco + Mastro + Bandeira
     const holeMesh = new THREE.Mesh(
       new THREE.CylinderGeometry(HOLE_RADIUS, HOLE_RADIUS, 0.05, 28),
       new THREE.MeshBasicMaterial({ color: 0x090d16 }),
@@ -606,7 +689,7 @@ export function MiniGolfGame({
 
     const holeRim = new THREE.Mesh(
       new THREE.RingGeometry(HOLE_RADIUS, HOLE_RADIUS + 0.08, 28),
-      new THREE.MeshBasicMaterial({ color: 0xe2e8f0, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }),
     )
     holeRim.rotation.x = -Math.PI / 2
     holeRim.position.set(course.hole.x, 0.02, course.hole.z)
@@ -622,11 +705,11 @@ export function MiniGolfGame({
 
     const flagGeo = new THREE.ConeGeometry(0.45, 0.95, 3)
     flagGeo.rotateZ(-Math.PI / 2)
-    const flagMesh = new THREE.Mesh(flagGeo, new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.5 }))
+    const flagMesh = new THREE.Mesh(flagGeo, new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.4 }))
     flagMesh.position.set(course.hole.x + 0.42, 2.2, course.hole.z)
     courseGroup.add(flagMesh)
 
-    // ─── Linha / Seta de Trajetória 3D no Chão (Pull & Release) ───────────────
+    // ─── Linha / Seta de Trajetória 3D no Chão ────────────────────────────────
     const aimGroup = new THREE.Group()
     aimGroup.visible = false
     scene.add(aimGroup)
@@ -687,32 +770,31 @@ export function MiniGolfGame({
     dashedLine.computeLineDistances()
     aimGroup.add(dashedLine)
 
-    // Sincroniza / Atualiza Bolas dos Participantes no Tee
-    const entries = participants.length > 0 ? participants : [{ peerId: localPeerId, name: localName, isLocal: true }]
+    // Inicializa ou sincroniza bolas dos participantes SEM resetar posições existentes
+    const currentParticipants = participantsRef.current
+    const entries =
+      currentParticipants.length > 0 ? currentParticipants : [{ peerId: localPeerId, name: localName, isLocal: true }]
     entries.forEach((p, idx) => {
-      const pos = spawnPositionForIndex(course.tee, idx, entries.length)
-      let b = ballsRef.current.get(p.peerId)
+      let b = ballsMap.get(p.peerId)
       if (!b) {
+        const pos = spawnPositionForIndex(course.tee, idx, entries.length)
         b = {
           peerId: p.peerId,
           name: p.name,
           color: colorFromString(p.peerId),
           x: pos.x,
+          y: BALL_RADIUS,
           z: pos.z,
           vx: 0,
           vz: 0,
           strokes: 0,
           inHole: false,
+          lastRestingX: pos.x,
+          lastRestingZ: pos.z,
         }
-        ballsRef.current.set(p.peerId, b)
+        ballsMap.set(p.peerId, b)
       } else {
         b.name = p.name
-        b.x = pos.x
-        b.z = pos.z
-        b.vx = 0
-        b.vz = 0
-        b.strokes = 0
-        b.inHole = false
       }
 
       if (!b.mesh) {
@@ -734,12 +816,16 @@ export function MiniGolfGame({
     })
     syncScoreboardUi()
 
-    // ─── MECÂNICA DE MIRA DEFINITIVA (PLANO MATEMÁTICO INFINITO) ─────────────
-    // Zero colisão contra malhas 3D (paredes/obstáculos) durante a puxada.
+    // ─── ENTRADA DO USUÁRIO: MIRA vs NAVEGAÇÃO LIVRE DA CÂMERA ───────────────
     const raycaster = new THREE.Raycaster()
     const hitPoint = new THREE.Vector3()
-    let isDragging = false
+
+    let isAiming = false
+    let isOrbiting = false
+    let isPanning = false
     let dragPlane: THREE.Plane | null = null
+    let lastPointerX = 0
+    let lastPointerY = 0
 
     const getPointOnPlane = (clientX: number, clientY: number, plane: THREE.Plane): THREE.Vector3 | null => {
       const rect = renderer.domElement.getBoundingClientRect()
@@ -748,6 +834,22 @@ export function MiniGolfGame({
       const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1
       raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera)
       return raycaster.ray.intersectPlane(plane, hitPoint)
+    }
+
+    const orbitCamera = (dx: number, dy: number) => {
+      cameraPhi -= dx * 0.007
+      cameraTheta = Math.max(0.22, Math.min(1.36, cameraTheta + dy * 0.005))
+    }
+
+    const panCamera = (dx: number, dy: number) => {
+      const rightX = Math.cos(cameraPhi)
+      const rightZ = -Math.sin(cameraPhi)
+      const forwardX = -Math.sin(cameraPhi)
+      const forwardZ = -Math.cos(cameraPhi)
+
+      const panSpeed = cameraRadius * 0.0018
+      cameraTarget.x += (-dx * rightX + dy * forwardX) * panSpeed
+      cameraTarget.z += (-dx * rightZ + dy * forwardZ) * panSpeed
     }
 
     const updateAimArrowVisual = (ballX: number, ballZ: number, angle: number, clampedDist: number, ratio: number) => {
@@ -759,7 +861,6 @@ export function MiniGolfGame({
       aimGroup.position.set(ballX, 0.04, ballZ)
       aimGroup.rotation.y = -angle
 
-      // Gradiente suave de cor (Verde -> Amarelo -> Vermelho)
       const color = new THREE.Color()
       if (ratio < 0.5) {
         color.lerpColors(new THREE.Color(0x22c55e), new THREE.Color(0xfacc15), ratio * 2)
@@ -778,85 +879,151 @@ export function MiniGolfGame({
     }
 
     const onGlobalPointerMove = (e: PointerEvent) => {
-      if (!isDragging || !dragPlane) return
-      const myBall = ballsRef.current.get(localPeerId)
-      if (!myBall) return
+      if (isAiming) {
+        if (!dragPlane) return
+        const myBall = ballsMap.get(localPeerId)
+        if (!myBall) return
 
-      const pt = getPointOnPlane(e.clientX, e.clientY, dragPlane)
-      if (!pt) return
+        const pt = getPointOnPlane(e.clientX, e.clientY, dragPlane)
+        if (!pt) return
 
-      const pullX = myBall.x - pt.x
-      const pullZ = myBall.z - pt.z
-      const dist = Math.hypot(pullX, pullZ)
-      const clampedDist = Math.min(MAX_PULL_DIST, dist)
-      const ratio = clampedDist / MAX_PULL_DIST
-      const angle = Math.atan2(pullZ, pullX)
-
-      setPowerPct(Math.round(ratio * 100))
-      updateAimArrowVisual(myBall.x, myBall.z, angle, clampedDist, ratio)
-    }
-
-    const onGlobalPointerUp = (e: PointerEvent) => {
-      if (!isDragging) return
-      isDragging = false
-      window.removeEventListener('pointermove', onGlobalPointerMove)
-      window.removeEventListener('pointerup', onGlobalPointerUp)
-
-      aimGroup.visible = false
-      setPowerPct(0)
-
-      const myBall = ballsRef.current.get(localPeerId)
-      if (!myBall || myBall.inHole || !dragPlane) return
-
-      const pt = getPointOnPlane(e.clientX, e.clientY, dragPlane)
-      if (!pt) return
-
-      const pullX = myBall.x - pt.x
-      const pullZ = myBall.z - pt.z
-      const dist = Math.hypot(pullX, pullZ)
-      const clampedDist = Math.min(MAX_PULL_DIST, dist)
-
-      if (clampedDist >= 0.18) {
+        const pullX = myBall.x - pt.x
+        const pullZ = myBall.z - pt.z
+        const dist = Math.hypot(pullX, pullZ)
+        const clampedDist = Math.min(MAX_PULL_DIST, dist)
         const ratio = clampedDist / MAX_PULL_DIST
         const angle = Math.atan2(pullZ, pullX)
-        const speed = ratio * MAX_POWER
-        const vx = Number((Math.cos(angle) * speed).toFixed(5))
-        const vz = Number((Math.sin(angle) * speed).toFixed(5))
-        onSendStroke(vx, vz)
+
+        setPowerPct(Math.round(ratio * 100))
+        updateAimArrowVisual(myBall.x, myBall.z, angle, clampedDist, ratio)
+        return
+      }
+
+      const dx = e.clientX - lastPointerX
+      const dy = e.clientY - lastPointerY
+      lastPointerX = e.clientX
+      lastPointerY = e.clientY
+
+      if (isOrbiting) {
+        if (e.shiftKey) {
+          panCamera(dx, dy)
+        } else {
+          orbitCamera(dx, dy)
+        }
+      } else if (isPanning) {
+        panCamera(dx, dy)
       }
     }
 
+    const onGlobalPointerUp = (e: PointerEvent) => {
+      if (isAiming) {
+        isAiming = false
+        aimGroup.visible = false
+        setPowerPct(0)
+
+        const myBall = ballsMap.get(localPeerId)
+        if (myBall && !myBall.inHole && dragPlane) {
+          const pt = getPointOnPlane(e.clientX, e.clientY, dragPlane)
+          if (pt) {
+            const pullX = myBall.x - pt.x
+            const pullZ = myBall.z - pt.z
+            const dist = Math.hypot(pullX, pullZ)
+            const clampedDist = Math.min(MAX_PULL_DIST, dist)
+
+            if (clampedDist >= 0.18) {
+              const ratio = clampedDist / MAX_PULL_DIST
+              const angle = Math.atan2(pullZ, pullX)
+              const speed = ratio * MAX_POWER
+              const vx = Number((Math.cos(angle) * speed).toFixed(5))
+              const vz = Number((Math.sin(angle) * speed).toFixed(5))
+              isTrackingBall = true
+              onSendStroke(vx, vz)
+            }
+          }
+        }
+      }
+
+      isOrbiting = false
+      isPanning = false
+      window.removeEventListener('pointermove', onGlobalPointerMove)
+      window.removeEventListener('pointerup', onGlobalPointerUp)
+    }
+
     const onCanvasPointerDown = (e: PointerEvent) => {
-      const myBall = ballsRef.current.get(localPeerId)
-      if (!myBall || myBall.inHole || Math.hypot(myBall.vx, myBall.vz) > 0.002) return
+      lastPointerX = e.clientX
+      lastPointerY = e.clientY
 
-      // Cria plano matemático horizontal infinito exatamente na altura da bola
-      dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -BALL_RADIUS)
-      const pt = getPointOnPlane(e.clientX, e.clientY, dragPlane)
-      if (!pt) return
+      const myBall = ballsMap.get(localPeerId)
 
-      // Inicia puxada se o clique for próximo à bola do jogador
-      if (Math.hypot(pt.x - myBall.x, pt.z - myBall.z) <= 2.6) {
-        isDragging = true
-        window.addEventListener('pointermove', onGlobalPointerMove)
-        window.addEventListener('pointerup', onGlobalPointerUp)
+      // Regra de Ouro: clique na bola ativa a Mira
+      if (e.button === 0 && myBall && !myBall.inHole && Math.hypot(myBall.vx, myBall.vz) <= 0.002) {
+        const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -BALL_RADIUS)
+        const pt = getPointOnPlane(e.clientX, e.clientY, plane)
+        if (pt && Math.hypot(pt.x - myBall.x, pt.z - myBall.z) <= 2.2) {
+          isAiming = true
+          dragPlane = plane
+          window.addEventListener('pointermove', onGlobalPointerMove)
+          window.addEventListener('pointerup', onGlobalPointerUp)
+          return
+        }
+      }
+
+      // Caso contrário, ativa navegação livre da câmera (Orbit ou Pan)
+      if (e.button === 0) {
+        isOrbiting = true
+      } else if (e.button === 2) {
+        isPanning = true
+      }
+      isTrackingBall = false
+      window.addEventListener('pointermove', onGlobalPointerMove)
+      window.addEventListener('pointerup', onGlobalPointerUp)
+    }
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      cameraRadius = Math.max(5.5, Math.min(32, cameraRadius + e.deltaY * 0.015))
+    }
+
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault()
+    }
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat) {
+        const activeTag = (document.activeElement?.tagName || '').toLowerCase()
+        if (activeTag === 'input' || activeTag === 'textarea') return
+        e.preventDefault()
+        centerOnBall()
       }
     }
 
     const domEl = renderer.domElement
     domEl.addEventListener('pointerdown', onCanvasPointerDown)
+    domEl.addEventListener('wheel', onWheel, { passive: false })
+    domEl.addEventListener('contextmenu', onContextMenu)
+    window.addEventListener('keydown', onKeyDown)
 
     // ─── Loop de Física e Renderização 60 FPS ─────────────────────────────────
     let animId = 0
     const animate = () => {
       animId = requestAnimationFrame(animate)
 
-      for (const b of ballsRef.current.values()) {
+      const myBall = ballsMap.get(localPeerId)
+
+      // Segue a bola suavemente com a câmera quando em modo de acompanhamento
+      if (isTrackingBall && myBall) {
+        cameraTarget.x += (myBall.x - cameraTarget.x) * 0.08
+        cameraTarget.z += (myBall.z - cameraTarget.z) * 0.08
+      }
+
+      updateCameraTransform()
+
+      for (const b of ballsMap.values()) {
         if (!b.inHole && (Math.abs(b.vx) > 0.0001 || Math.abs(b.vz) > 0.0001)) {
           b.x += b.vx
           b.z += b.vz
 
-          // Verifica se está dentro de caixa de areia (Bunker: alto atrito)
+          // Verifica se está dentro de caixa de areia (Bunker)
           let inSand = false
           for (const sand of course.sandTraps) {
             if (b.x >= sand.minX && b.x <= sand.maxX && b.z >= sand.minZ && b.z <= sand.maxZ) {
@@ -891,7 +1058,7 @@ export function MiniGolfGame({
             }
           }
 
-          // Colisão com Bumpers Cilíndricos (Reflexão elástica aumentada)
+          // Colisão com Bumpers Cilíndricos
           for (const bumper of course.bumpers) {
             const dx = b.x - bumper.x
             const dz = b.z - bumper.z
@@ -948,22 +1115,20 @@ export function MiniGolfGame({
           } else if (speed < 0.002) {
             b.vx = 0
             b.vz = 0
+            b.lastRestingX = b.x
+            b.lastRestingZ = b.z
             syncScoreboardUi()
           }
+        }
 
-          // Fallback de segurança contra saída acidental dos limites da pista
-          if (
-            b.x < bb.minX - 3 ||
-            b.x > bb.maxX + 3 ||
-            b.z < bb.minZ - 3 ||
-            b.z > bb.maxZ + 3
-          ) {
-            b.x = course.tee.x
-            b.z = course.tee.z
-            b.vx = 0
-            b.vz = 0
-            syncScoreboardUi()
-          }
+        // Recuperação de segurança se a bola cair para fora da pista no abismo (y < -2.0)
+        if (b.y < -2.0) {
+          b.x = b.lastRestingX ?? course.tee.x
+          b.z = b.lastRestingZ ?? course.tee.z
+          b.y = BALL_RADIUS
+          b.vx = 0
+          b.vz = 0
+          syncScoreboardUi()
         }
 
         if (b.mesh) {
@@ -992,16 +1157,19 @@ export function MiniGolfGame({
     return () => {
       cancelAnimationFrame(animId)
       window.removeEventListener('resize', onResize)
+      window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('pointermove', onGlobalPointerMove)
       window.removeEventListener('pointerup', onGlobalPointerUp)
       domEl.removeEventListener('pointerdown', onCanvasPointerDown)
+      domEl.removeEventListener('wheel', onWheel)
+      domEl.removeEventListener('contextmenu', onContextMenu)
       for (const b of ballsMap.values()) {
         b.mesh = undefined
         b.labelSprite = undefined
       }
       renderer.dispose()
     }
-  }, [open, courseSeed, localPeerId, localName, participants, onSendStroke, syncScoreboardUi])
+  }, [open, courseSeed, localPeerId, localName, onSendStroke, syncScoreboardUi])
 
   if (!open) return null
 
@@ -1073,24 +1241,36 @@ export function MiniGolfGame({
           <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-xl">
             <div ref={mountRef} className="h-[380px] w-full cursor-grab active:cursor-grabbing sm:h-[450px]" />
 
-            {/* Banner Superior de Instrução e Status */}
-            <div className="pointer-events-none absolute inset-x-3 top-3 flex items-center justify-between gap-2">
-              <span className="rounded-lg bg-black/75 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur">
-                {localInHole ? (
-                  <span className="text-emerald-400 font-bold">🎉 Bola no buraco! Aguarde os outros jogadores.</span>
-                ) : localMoving ? (
-                  <span className="text-amber-300 font-bold">⚡ Bola em movimento...</span>
-                ) : (
-                  <span>⛳ Puxe sua bola para trás para mirar a tacada</span>
-                )}
-              </span>
+            {/* Banner Superior com Botão Focar Bola e Status */}
+            <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-wrap items-center justify-between gap-2 z-10">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => centerOnBallRef.current()}
+                  className="pointer-events-auto inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-black/80 px-3 py-1.5 text-xs font-bold text-emerald-400 shadow-lg backdrop-blur transition hover:bg-black hover:text-white"
+                  title="Centralizar câmera na sua bola (Espaço)"
+                >
+                  <Target size={14} className="text-emerald-400" />
+                  <span>Centralizar na Bola (Espaço)</span>
+                </button>
+
+                <span className="rounded-lg bg-black/75 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur border border-white/5">
+                  {localInHole ? (
+                    <span className="text-emerald-400 font-bold">🎉 Bola no buraco! Aguarde os outros jogadores.</span>
+                  ) : localMoving ? (
+                    <span className="text-amber-300 font-bold">⚡ Bola em movimento...</span>
+                  ) : (
+                    <span>⛳ Puxe sua bola para trás para mirar</span>
+                  )}
+                </span>
+              </div>
 
               <span className="rounded-full bg-slate-900/85 px-2.5 py-1 text-[11px] font-bold text-zinc-300 backdrop-blur border border-white/10">
                 Buraco {holeNumber} • Par {currentPar}
               </span>
             </div>
 
-            {/* Medidor e Barra de Força Fixo no Canto Inferior Direito (Sem sobreposição no Spawn) */}
+            {/* Medidor e Barra de Força Fixo no Canto Inferior Direito */}
             {powerPct > 0 && (
               <div className="pointer-events-none absolute bottom-4 right-4 z-20 flex w-52 flex-col gap-1.5 rounded-2xl border border-white/15 bg-black/85 p-3 shadow-2xl backdrop-blur-md">
                 <div className="flex items-center justify-between text-xs font-bold text-white">
@@ -1160,11 +1340,15 @@ export function MiniGolfGame({
               </ul>
             </div>
 
-            <div className="mt-4 rounded-xl border border-white/5 bg-white/[0.03] p-3 text-[11px] text-zinc-400">
-              <p className="font-semibold text-white">Como jogar:</p>
-              <p className="mt-1">
-                Pressione com o mouse sobre a sua bola, puxe para trás para carregar a força e solte para disparar.
-              </p>
+            <div className="mt-4 rounded-xl border border-white/5 bg-white/[0.03] p-3 text-[11px] text-zinc-400 leading-relaxed">
+              <p className="font-semibold text-white">Controles:</p>
+              <ul className="mt-1 space-y-1">
+                <li>• <b>Puxar o taco:</b> Clique e arraste sua bola para trás.</li>
+                <li>• <b>Girar câmera:</b> Arraste com o botão esquerdo no cenário.</li>
+                <li>• <b>Mover visão (Pan):</b> Arraste com o botão direito.</li>
+                <li>• <b>Zoom:</b> Roda do mouse (scroll).</li>
+                <li>• <b>Focar bola:</b> Pressione <b>Espaço</b> ou use o botão no topo.</li>
+              </ul>
             </div>
           </aside>
         </div>
