@@ -823,13 +823,10 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
         onSelectSource={handleConfirmDesktopPicker}
       />
 
-      {/* Áudio recebido dos participantes: mudo quando local.deafened for verdadeiro */}
+      {/* Áudio de voz recebido dos participantes: mudo quando local.deafened for verdadeiro */}
       {participants.map((p) => {
         const voiceStream = voiceStreams[p.peerId] ?? p.micStream
-        const screenStream = screenStreams[p.peerId] ?? p.screenStream
-        const isWatchingThisScreen = watchedScreen?.id === p.peerId
         const effectiveVoiceVolume = local.deafened ? 0 : p.voiceVolume
-        const effectiveScreenVolume = local.deafened ? 0 : p.screenVolume
 
         return (
           <div key={p.peerId} aria-hidden="true">
@@ -837,15 +834,6 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
               <AudioSink
                 stream={voiceStream}
                 volume={effectiveVoiceVolume}
-                unlockSignal={audioUnlockSignal}
-                onAutoplayBlocked={handleAutoplayBlocked}
-                onAutoplayResolved={handleAutoplayResolved}
-              />
-            )}
-            {isWatchingThisScreen && screenStream && screenStream.getAudioTracks().length > 0 && (
-              <AudioSink
-                stream={screenStream}
-                volume={effectiveScreenVolume}
                 unlockSignal={audioUnlockSignal}
                 onAutoplayBlocked={handleAutoplayBlocked}
                 onAutoplayResolved={handleAutoplayResolved}

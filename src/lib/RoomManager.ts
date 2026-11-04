@@ -7,12 +7,6 @@ import { getIceServers } from './iceConfig'
 import { getPresence } from './presence'
 import type { PresenceRoomMember } from './presence'
 import {
-  preferH264Codec,
-  tuneReceiversZeroLatency,
-  tuneScreenSender,
-  tuneSenders,
-} from './rtc'
-import {
   BOT_PEER_ID,
   applyTrioAction,
   chooseBotTrioAction,
@@ -357,7 +351,7 @@ export class RoomManager {
     this.emit()
   }
 
-  async setScreenPreset(preset: ScreenSharePreset): Promise<void> {
+  setScreenPreset(preset: ScreenSharePreset): void {
     this.screenPreset = preset
     this.local.screenPreset = preset
 
@@ -365,30 +359,9 @@ export class RoomManager {
       const videoTrack = this.screenStream.getVideoTracks()[0]
       if (videoTrack) {
         try {
-          if (preset === 'game') {
-            await videoTrack.applyConstraints({
-              width: { ideal: 1280, max: 1280 },
-              height: { ideal: 720, max: 720 },
-              frameRate: { ideal: 60, max: 60 },
-            })
-            videoTrack.contentHint = 'motion'
-          } else {
-            await videoTrack.applyConstraints({
-              width: { ideal: 1920, max: 3840 },
-              height: { ideal: 1080, max: 2160 },
-              frameRate: { ideal: 60, max: 60 },
-            })
-            videoTrack.contentHint = 'detail'
-          }
-        } catch (err) {
-          console.warn('[WebRTC] Falha ao aplicar constraints no preset:', err)
-        }
-      }
-
-      for (const link of this.links.values()) {
-        const pc = link.screenOut?.peerConnection as RTCPeerConnection | undefined
-        if (pc) {
-          void tuneScreenSender(pc, preset)
+          videoTrack.contentHint = preset === 'game' ? 'motion' : 'detail'
+        } catch {
+          /* ignore */
         }
       }
 
@@ -426,19 +399,22 @@ export class RoomManager {
        */
       const isGame = preset === 'game'
       const options = {
-        video: {
-          frameRate: { ideal: 60, max: 60 },
-          width: isGame ? { ideal: 1280, max: 1280 } : { ideal: 1920, max: 3840 },
-          height: isGame ? { ideal: 720, max: 720 } : { ideal: 1080, max: 2160 },
-        },
+        video: isGame
+          ? {
+              width: { max: 1280 },
+              height: { max: 720 },
+              frameRate: { max: 60 },
+            }
+          : {
+              width: { max: 1920 },
+              height: { max: 1080 },
+              frameRate: { max: 60 },
+            },
         audio: {
           suppressLocalAudioPlayback: false,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: false,
-          restrictOwnAudio: true,
-          channelCount: 2,
-          sampleRate: 48000,
         },
         surfaceSwitching: 'include',
         selfBrowserSurface: 'exclude', // Evita loop visual da própria chamada
@@ -2420,11 +2396,7 @@ export class RoomManager {
     this.emit()
   }
 
-  private attachRemoteScreenStream(link: PeerLink, call: MediaConnection, stream: MediaStream): void {
-    const pc = call.peerConnection as RTCPeerConnection | undefined
-    if (pc) {
-      tuneReceiversZeroLatency(pc)
-    }
+  private attachRemoteScreenStream(link: PeerLink, _call: MediaConnection, stream: MediaStream): void {
     const isNew = link.info.screenStream?.id !== stream.id
     link.info.screenStream = stream
     this.screenStreams[link.id] = stream
@@ -2691,50 +2663,9 @@ export class RoomManager {
     }
   }
 
-  private watchConnection(link: PeerLink, call: MediaConnection, kind: MediaKind, outgoing: boolean): void {
+  private watchConnection(link: PeerLink, call: MediaConnection, kind: MediaKind, _outgoing: boolean): void {
     const pc = call.peerConnection as RTCPeerConnection | undefined
     if (!pc) return
-
-    const applyTuning = () => {
-      if (kind === 'screen') {
-        preferH264Codec(pc)
-      }
-      if (outgoing && kind === 'screen') {
-        void tuneScreenSender(pc, this.screenPreset)
-      } else if (outgoing || kind === 'mic') {
-        void tuneSenders(pc, kind)
-      }
-      if (!outgoing) {
-        tuneReceiversZeroLatency(pc)
-      }
-    }
-
-    if (kind === 'screen') {
-      preferH264Codec(pc)
-    }
-
-    if (!outgoing) {
-      try {
-        tuneReceiversZeroLatency(pc)
-        pc.addEventListener('track', (ev) => {
-          if (ev.receiver) {
-            try {
-              if ('playoutDelayHint' in ev.receiver) {
-                ;(ev.receiver as unknown as { playoutDelayHint: number }).playoutDelayHint = 0
-              }
-              if ('jitterBufferTarget' in ev.receiver) {
-                ;(ev.receiver as unknown as { jitterBufferTarget: number }).jitterBufferTarget = 0
-              }
-            } catch {
-              /* ignore */
-            }
-          }
-          tuneReceiversZeroLatency(pc)
-        })
-      } catch {
-        /* ignore */
-      }
-    }
 
     const onState = () => {
       if (this.destroyed) return
@@ -2745,7 +2676,6 @@ export class RoomManager {
           window.clearTimeout(link.iceDisconnectTimer)
           link.iceDisconnectTimer = null
         }
-        applyTuning()
         if (link.info.connectionState !== 'connected') {
           link.info.connectionState = 'connected'
           this.emit()
@@ -2790,10 +2720,6 @@ export class RoomManager {
     }
     pc.addEventListener('connectionstatechange', onState)
     pc.oniceconnectionstatechange = onState
-
-    if (pc.connectionState === 'connected') {
-      applyTuning()
-    }
   }
 
   // ════════════════════════════════════════════════════════════════════

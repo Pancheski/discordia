@@ -30,89 +30,34 @@ export function ScreenStage({
 }: ScreenStageProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
-  const audioRef = useRef<HTMLAudioElement>(null)
 
-  const stream = screen.stream
-  const videoTrack = stream?.getVideoTracks()[0] ?? null
-  const audioTrack = !screen.isLocal ? (stream?.getAudioTracks()[0] ?? null) : null
-  const videoTrackId = videoTrack?.id ?? null
-  const audioTrackId = audioTrack?.id ?? null
-
-  // 1) Isolamento estrito do elemento <video> por videoTrack?.id
+  // 1) Atribuição direta e nativa de srcObject = stream
   useEffect(() => {
-    const videoElement = videoRef.current
-    if (!videoElement) return
+    const videoEl = videoRef.current
+    if (!videoEl) return
 
-    if (!videoTrack) {
-      if (videoElement.srcObject) {
-        videoElement.srcObject = null
+    if (!screen.stream) {
+      if (videoEl.srcObject) {
+        videoEl.srcObject = null
       }
       return
     }
 
-    const currentStream = videoElement.srcObject as MediaStream | null
-    const currentTrackId = currentStream?.getVideoTracks()[0]?.id ?? null
-
-    if (currentTrackId !== videoTrack.id) {
-      videoElement.srcObject = new MediaStream([videoTrack])
+    if (videoEl.srcObject !== screen.stream) {
+      videoEl.srcObject = screen.stream
     }
 
-    const playVideo = () => {
-      videoElement.play().catch((err: unknown) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return
-        console.debug('[discordia] video play() aguardando interação:', err)
-      })
-    }
+    videoEl.play().catch((err: unknown) => {
+      if (err instanceof DOMException && err.name === 'AbortError') return
+      console.debug('[discordia] video play() aguardando interação:', err)
+    })
+  }, [screen.stream])
 
-    playVideo()
-    videoTrack.addEventListener('unmute', playVideo)
-
-    return () => {
-      videoTrack.removeEventListener('unmute', playVideo)
-    }
-  }, [videoTrackId, videoTrack])
-
-  // 2) Isolamento estrito do elemento <audio> por audioTrack?.id
+  // 2) Ajuste nativo de volume diretamente no elemento <video>
   useEffect(() => {
-    const audioElement = audioRef.current
-    if (!audioElement) return
-
-    if (!audioTrack || screen.isLocal) {
-      if (audioElement.srcObject) {
-        audioElement.srcObject = null
-      }
-      return
-    }
-
-    const currentStream = audioElement.srcObject as MediaStream | null
-    const currentTrackId = currentStream?.getAudioTracks()[0]?.id ?? null
-
-    if (currentTrackId !== audioTrack.id) {
-      audioElement.srcObject = new MediaStream([audioTrack])
-    }
-
-    const playAudio = () => {
-      audioElement.play().catch((err: unknown) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return
-        console.debug('[discordia] audio play() aguardando interação:', err)
-      })
-    }
-
-    playAudio()
-    audioTrack.addEventListener('unmute', playAudio)
-
-    return () => {
-      audioTrack.removeEventListener('unmute', playAudio)
-    }
-  }, [audioTrackId, audioTrack, screen.isLocal])
-
-  // 3) Atualização de volume sem recriar MediaStream
-  useEffect(() => {
-    const el = audioRef.current
-    if (el) {
-      const clampedVol = Math.max(0, Math.min(1, screen.volume))
-      el.volume = clampedVol
-      el.muted = clampedVol === 0 || screen.isLocal
+    const videoEl = videoRef.current
+    if (videoEl && !screen.isLocal) {
+      videoEl.volume = Math.max(0, Math.min(1, screen.volume))
     }
   }, [screen.volume, screen.isLocal])
 
@@ -138,7 +83,7 @@ export function ScreenStage({
       video.removeEventListener('resize', update)
       video.removeEventListener('loadedmetadata', update)
     }
-  }, [videoTrackId])
+  }, [screen.stream])
 
   const toggleFullscreen = useCallback(async () => {
     const el = containerRef.current
@@ -163,10 +108,15 @@ export function ScreenStage({
       className="stage-fullscreen group relative flex h-full min-h-0 w-full items-center justify-center overflow-hidden rounded-xl bg-black ring-1 ring-white/5"
       onDoubleClick={toggleFullscreen}
     >
-      <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
-      <audio ref={audioRef} autoPlay playsInline className="hidden" />
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={screen.isLocal}
+        className="h-full w-full object-contain"
+      />
 
-      {!videoTrack && (
+      {!screen.stream && (
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-black/80 text-center text-xs text-dc-muted">
           <div className="h-7 w-7 animate-spin rounded-full border-2 border-dc-brand border-t-transparent" />
           <span>Conectando à transmissão de {screen.isLocal ? 'sua tela' : screen.name}…</span>
@@ -264,7 +214,7 @@ export function ScreenStage({
             <MonitorUp size={14} />
             Sua tela{!screen.hasAudio && ' · sem áudio'}
           </span>
-        ) : screen.hasAudio || audioTrack ? (
+        ) : screen.hasAudio ? (
           <div className="pointer-events-auto w-56 rounded-md bg-black/55 px-2 py-1 backdrop-blur">
             <VolumeSlider
               id={`screen-volume-${screen.id}`}
@@ -291,32 +241,26 @@ interface ScreenThumbProps {
 
 export function ScreenThumb({ screen, active, onSelect }: ScreenThumbProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
-  const stream = screen.stream
-  const videoTrack = stream?.getVideoTracks()[0] ?? null
-  const videoTrackId = videoTrack?.id ?? null
 
   useEffect(() => {
-    const videoElement = videoRef.current
-    if (!videoElement) return
+    const videoEl = videoRef.current
+    if (!videoEl) return
 
-    if (!videoTrack) {
-      if (videoElement.srcObject) {
-        videoElement.srcObject = null
+    if (!screen.stream) {
+      if (videoEl.srcObject) {
+        videoEl.srcObject = null
       }
       return
     }
 
-    const currentStream = videoElement.srcObject as MediaStream | null
-    const currentTrackId = currentStream?.getVideoTracks()[0]?.id ?? null
-
-    if (currentTrackId !== videoTrack.id) {
-      videoElement.srcObject = new MediaStream([videoTrack])
+    if (videoEl.srcObject !== screen.stream) {
+      videoEl.srcObject = screen.stream
     }
 
-    videoElement.play().catch(() => {
+    videoEl.play().catch(() => {
       /* ignore */
     })
-  }, [videoTrackId, videoTrack])
+  }, [screen.stream])
 
   return (
     <button
