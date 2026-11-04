@@ -9,10 +9,8 @@ import type { PresenceRoomMember } from './presence'
 import {
   preferH264Codec,
   tuneReceiversZeroLatency,
-  tuneScreenSdp,
   tuneScreenSender,
   tuneSenders,
-  tuneVoiceSdp,
 } from './rtc'
 import {
   BOT_PEER_ID,
@@ -523,6 +521,30 @@ export class RoomManager {
       this.broadcastState()
       if (!silent) this.toast('info', 'Transmissão de tela encerrada.')
       this.emit()
+    }
+  }
+
+  requestScreenStream(targetPeerId: string): void {
+    if (this.destroyed || !this.local.peerId || !targetPeerId || targetPeerId === this.local.peerId) return
+    const currentStream = this.screenStreams[targetPeerId]
+    const track = currentStream?.getVideoTracks()[0]
+    const isLive = track && track.readyState === 'live'
+
+    if (isLive) return
+
+    const link = this.links.get(targetPeerId)
+    if (link?.data?.open) {
+      this.send(link.data, {
+        type: 'screen:request-stream',
+        fromPeerId: this.local.peerId,
+        toPeerId: targetPeerId,
+      })
+    } else {
+      this.broadcastMsg({
+        type: 'screen:request-stream',
+        fromPeerId: this.local.peerId,
+        toPeerId: targetPeerId,
+      })
     }
   }
 
@@ -2083,6 +2105,16 @@ export class RoomManager {
         this.applyRemoteSharing(link, !!msg.sharing)
         break
       }
+      case 'screen:request-stream': {
+        if (msg.toPeerId === this.local.peerId && this.screenStream) {
+          const requesterLink = this.links.get(msg.fromPeerId)
+          if (requesterLink) {
+            console.info(`[WebRTC] Retransmitindo stream de tela sob demanda para ${msg.fromPeerId}`)
+            this.callPeer(requesterLink, 'screen')
+          }
+        }
+        return
+      }
       case 'bye': {
         this.removeLink(id, true)
         return
@@ -2435,12 +2467,13 @@ export class RoomManager {
     const callId = `${this.local.peerId}-${callSuffix}`
     const call = peer.call(link.id, stream, {
       metadata: {
+        type: kind === 'screen' ? 'screen' : 'voice',
         kind,
+        streamId: stream.id,
         callId,
         streamType: callSuffix,
         name: this.local.name,
       },
-      sdpTransform: kind === 'mic' ? tuneVoiceSdp : tuneScreenSdp,
     })
     if (!call) return
 
@@ -2506,6 +2539,7 @@ export class RoomManager {
     const id = call.peer
     this.emptySlotCooldowns.delete(id)
     const meta = (call.metadata ?? {}) as {
+      type?: unknown
       kind?: unknown
       callId?: unknown
       streamType?: unknown
@@ -2513,7 +2547,10 @@ export class RoomManager {
     }
     const callIdStr = typeof meta.callId === 'string' ? meta.callId : ''
     const isScreenMeta =
-      meta.kind === 'screen' || meta.streamType === 'screen' || callIdStr.endsWith('-screen')
+      meta.type === 'screen' ||
+      meta.kind === 'screen' ||
+      meta.streamType === 'screen' ||
+      callIdStr.endsWith('-screen')
     const kind: MediaKind = isScreenMeta ? 'screen' : 'mic'
     const link = this.ensureLink(id, meta.name, true)
     this.emit()
@@ -2521,9 +2558,7 @@ export class RoomManager {
     // Chamadas de voz são atendidas com o microfone local; chamadas de tela nunca tocam no canal de voz
     if (kind === 'mic') {
       if (!this.micStream) this.useSilentMicrophone()
-      call.answer(this.micStream ?? undefined, {
-        sdpTransform: tuneVoiceSdp,
-      })
+      call.answer(this.micStream ?? undefined)
       if (link.micIn && link.micIn !== call) {
         try {
           link.micIn.close()
@@ -2533,9 +2568,7 @@ export class RoomManager {
       }
       link.micIn = call
     } else {
-      call.answer(undefined, {
-        sdpTransform: tuneScreenSdp,
-      })
+      call.answer(undefined)
       if (link.screenIn && link.screenIn !== call) {
         try {
           link.screenIn.close()

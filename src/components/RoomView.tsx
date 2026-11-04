@@ -35,6 +35,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     startScreenShare,
     stopScreenShare,
     setScreenPreset,
+    requestScreenStream,
     leave,
     setVolume,
     pushToast,
@@ -117,7 +118,10 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
   const handleWatchScreen = useCallback((screenId: string) => {
     setWatchedScreenId(screenId)
     setStagePriority('screen')
-  }, [])
+    if (screenId && screenId !== 'local') {
+      requestScreenStream(screenId)
+    }
+  }, [requestScreenStream])
 
   const handleStopWatchingScreen = useCallback(() => {
     setWatchedScreenId(null)

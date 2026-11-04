@@ -74,6 +74,7 @@ export type PeerMessage =
   | { type: 'hello'; name: string; muted: boolean; sharing: boolean }
   | { type: 'hello-ack'; name: string; muted: boolean; sharing: boolean }
   | { type: 'state'; muted: boolean; sharing: boolean }
+  | { type: 'screen:request-stream'; fromPeerId: string; toPeerId: string }
   | { type: 'bye' }
   | { type: 'chat'; id: string; text: string; ts: number }
   | { type: 'file-offer'; id: string; ts: number; file: FileMeta }

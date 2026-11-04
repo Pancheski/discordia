@@ -142,6 +142,10 @@ export function useRoom() {
     (preset: ScreenSharePreset) => void managerRef.current?.setScreenPreset(preset),
     [],
   )
+  const requestScreenStream = useCallback(
+    (targetPeerId: string) => managerRef.current?.requestScreenStream(targetPeerId),
+    [],
+  )
   const setVolume = useCallback(
     (peerId: string, kind: MediaKind, value: number) => managerRef.current?.setParticipantVolume(peerId, kind, value),
     [],
@@ -239,6 +243,7 @@ export function useRoom() {
     startScreenShare,
     stopScreenShare,
     setScreenPreset,
+    requestScreenStream,
     setVolume,
     chat,
     sendChat,

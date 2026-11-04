@@ -1,13 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { EyeOff, Film, Maximize2, Minimize2, MonitorUp, VolumeX, Zap } from 'lucide-react'
-import { useMediaStream } from '../hooks/useMediaStream'
 import type { PeerStats, ScreenSharePreset } from '../types'
 import { VolumeSlider } from './VolumeSlider'
 
 export interface ScreenSource {
   id: string
   name: string
-  stream: MediaStream
+  stream: MediaStream | null
   isLocal: boolean
   volume: number
   hasAudio: boolean
@@ -30,30 +29,92 @@ export function ScreenStage({
   onStopWatching,
 }: ScreenStageProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
 
-  // Desacoplamento de Vídeo e Áudio para eliminar atraso forçado pelo jitter buffer do Chromium
-  const videoOnlyStream = useMemo(() => {
-    if (!screen.stream) return null
-    const vTracks = screen.stream.getVideoTracks()
-    return vTracks.length > 0 ? new MediaStream([vTracks[0]]) : null
-  }, [screen.stream])
+  const stream = screen.stream
+  const videoTrack = stream?.getVideoTracks()[0] ?? null
+  const audioTrack = !screen.isLocal ? (stream?.getAudioTracks()[0] ?? null) : null
+  const videoTrackId = videoTrack?.id ?? null
+  const audioTrackId = audioTrack?.id ?? null
 
-  const audioOnlyStream = useMemo(() => {
-    if (!screen.stream || screen.isLocal) return null
-    const aTracks = screen.stream.getAudioTracks()
-    return aTracks.length > 0 ? new MediaStream([aTracks[0]]) : null
-  }, [screen.stream, screen.isLocal])
+  // 1) Isolamento estrito do elemento <video> por videoTrack?.id
+  useEffect(() => {
+    const videoElement = videoRef.current
+    if (!videoElement) return
 
-  const videoRef = useMediaStream<HTMLVideoElement>(videoOnlyStream)
-  const audioRef = useMediaStream<HTMLAudioElement>(audioOnlyStream)
+    if (!videoTrack) {
+      if (videoElement.srcObject) {
+        videoElement.srcObject = null
+      }
+      return
+    }
 
-  // Ajusta volume no elemento de áudio desacoplado
+    const currentStream = videoElement.srcObject as MediaStream | null
+    const currentTrackId = currentStream?.getVideoTracks()[0]?.id ?? null
+
+    if (currentTrackId !== videoTrack.id) {
+      videoElement.srcObject = new MediaStream([videoTrack])
+    }
+
+    const playVideo = () => {
+      videoElement.play().catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        console.debug('[discordia] video play() aguardando interação:', err)
+      })
+    }
+
+    playVideo()
+    videoTrack.addEventListener('unmute', playVideo)
+
+    return () => {
+      videoTrack.removeEventListener('unmute', playVideo)
+    }
+  }, [videoTrackId, videoTrack])
+
+  // 2) Isolamento estrito do elemento <audio> por audioTrack?.id
+  useEffect(() => {
+    const audioElement = audioRef.current
+    if (!audioElement) return
+
+    if (!audioTrack || screen.isLocal) {
+      if (audioElement.srcObject) {
+        audioElement.srcObject = null
+      }
+      return
+    }
+
+    const currentStream = audioElement.srcObject as MediaStream | null
+    const currentTrackId = currentStream?.getAudioTracks()[0]?.id ?? null
+
+    if (currentTrackId !== audioTrack.id) {
+      audioElement.srcObject = new MediaStream([audioTrack])
+    }
+
+    const playAudio = () => {
+      audioElement.play().catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        console.debug('[discordia] audio play() aguardando interação:', err)
+      })
+    }
+
+    playAudio()
+    audioTrack.addEventListener('unmute', playAudio)
+
+    return () => {
+      audioTrack.removeEventListener('unmute', playAudio)
+    }
+  }, [audioTrackId, audioTrack, screen.isLocal])
+
+  // 3) Atualização de volume sem recriar MediaStream
   useEffect(() => {
     const el = audioRef.current
     if (el) {
-      el.volume = Math.max(0, Math.min(1, screen.volume))
+      const clampedVol = Math.max(0, Math.min(1, screen.volume))
+      el.volume = clampedVol
+      el.muted = clampedVol === 0 || screen.isLocal
     }
-  }, [audioRef, screen.volume])
+  }, [screen.volume, screen.isLocal])
 
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [resolution, setResolution] = useState('')
@@ -67,48 +128,17 @@ export function ScreenStage({
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-
-    const catchUpLive = () => {
-      try {
-        if (video.buffered && video.buffered.length > 0) {
-          const liveEdge = video.buffered.end(video.buffered.length - 1)
-          const drift = liveEdge - video.currentTime
-          // Pula imediatamente para o frame mais recente caso haja atraso na rede (> 80ms)
-          if (drift > 0.08) {
-            video.currentTime = liveEdge
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
-    video.addEventListener('timeupdate', catchUpLive)
-    video.addEventListener('waiting', catchUpLive)
-    video.addEventListener('stalled', catchUpLive)
-    const interval = setInterval(catchUpLive, 400)
-
-    return () => {
-      video.removeEventListener('timeupdate', catchUpLive)
-      video.removeEventListener('waiting', catchUpLive)
-      video.removeEventListener('stalled', catchUpLive)
-      clearInterval(interval)
-    }
-  }, [videoRef, screen.stream])
-
-  useEffect(() => {
-    const video = videoRef.current
-    if (!video) return
     const update = () => {
       if (video.videoWidth) setResolution(`${video.videoWidth}×${video.videoHeight}`)
     }
+    update()
     video.addEventListener('resize', update)
     video.addEventListener('loadedmetadata', update)
     return () => {
       video.removeEventListener('resize', update)
       video.removeEventListener('loadedmetadata', update)
     }
-  }, [videoRef, screen.stream])
+  }, [videoTrackId])
 
   const toggleFullscreen = useCallback(async () => {
     const el = containerRef.current
@@ -125,7 +155,7 @@ export function ScreenStage({
     } catch (err) {
       console.warn('[discordia] fullscreen', err)
     }
-  }, [videoRef])
+  }, [])
 
   return (
     <div
@@ -134,7 +164,14 @@ export function ScreenStage({
       onDoubleClick={toggleFullscreen}
     >
       <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
-      {audioOnlyStream && <audio ref={audioRef} autoPlay playsInline />}
+      <audio ref={audioRef} autoPlay playsInline className="hidden" />
+
+      {!videoTrack && (
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-black/80 text-center text-xs text-dc-muted">
+          <div className="h-7 w-7 animate-spin rounded-full border-2 border-dc-brand border-t-transparent" />
+          <span>Conectando à transmissão de {screen.isLocal ? 'sua tela' : screen.name}…</span>
+        </div>
+      )}
 
       {/* Barra superior */}
       <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 bg-gradient-to-b from-black/75 to-transparent p-3 opacity-100 transition-opacity duration-300">
@@ -189,7 +226,7 @@ export function ScreenStage({
               </button>
             </div>
           ) : screenPreset === 'game' ? (
-            <span className="hidden items-center gap-1 rounded bg-amber-500/20 px-2 py-0.5 text-[11px] font-bold text-amber-300 border border-amber-500/30 sm:inline-flex">
+            <span className="hidden items-center gap-1 rounded border border-amber-500/30 bg-amber-500/20 px-2 py-0.5 text-[11px] font-bold text-amber-300 sm:inline-flex">
               <Zap size={11} className="fill-amber-300" /> Latência Zero
             </span>
           ) : null}
@@ -199,7 +236,7 @@ export function ScreenStage({
             <button
               type="button"
               onClick={onStopWatching}
-              className="pointer-events-auto inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-black/65 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur transition hover:bg-dc-red hover:border-dc-red"
+              className="pointer-events-auto inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-black/65 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur transition hover:border-dc-red hover:bg-dc-red"
               title="Parar de assistir"
             >
               <EyeOff size={14} />
@@ -227,7 +264,7 @@ export function ScreenStage({
             <MonitorUp size={14} />
             Sua tela{!screen.hasAudio && ' · sem áudio'}
           </span>
-        ) : screen.hasAudio ? (
+        ) : screen.hasAudio || audioTrack ? (
           <div className="pointer-events-auto w-56 rounded-md bg-black/55 px-2 py-1 backdrop-blur">
             <VolumeSlider
               id={`screen-volume-${screen.id}`}
@@ -253,13 +290,34 @@ interface ScreenThumbProps {
 }
 
 export function ScreenThumb({ screen, active, onSelect }: ScreenThumbProps) {
-  const videoOnlyStream = useMemo(() => {
-    if (!screen.stream) return null
-    const vTracks = screen.stream.getVideoTracks()
-    return vTracks.length > 0 ? new MediaStream([vTracks[0]]) : null
-  }, [screen.stream])
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const stream = screen.stream
+  const videoTrack = stream?.getVideoTracks()[0] ?? null
+  const videoTrackId = videoTrack?.id ?? null
 
-  const videoRef = useMediaStream<HTMLVideoElement>(videoOnlyStream)
+  useEffect(() => {
+    const videoElement = videoRef.current
+    if (!videoElement) return
+
+    if (!videoTrack) {
+      if (videoElement.srcObject) {
+        videoElement.srcObject = null
+      }
+      return
+    }
+
+    const currentStream = videoElement.srcObject as MediaStream | null
+    const currentTrackId = currentStream?.getVideoTracks()[0]?.id ?? null
+
+    if (currentTrackId !== videoTrack.id) {
+      videoElement.srcObject = new MediaStream([videoTrack])
+    }
+
+    videoElement.play().catch(() => {
+      /* ignore */
+    })
+  }, [videoTrackId, videoTrack])
+
   return (
     <button
       type="button"
