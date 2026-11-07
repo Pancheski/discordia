@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Check, Keyboard, Mic, RotateCcw, VolumeX } from 'lucide-react'
+import { Check, Keyboard, Mic, RotateCcw, Settings, Video, VolumeX } from 'lucide-react'
 import { Modal } from './Modal'
 import {
   DEFAULT_KEYBINDS,
@@ -10,24 +10,87 @@ import {
   type KeybindShortcuts,
 } from '../lib/keybinds'
 
+interface MediaDeviceInfoItem {
+  deviceId: string
+  label: string
+}
+
 interface KeybindSettingsModalProps {
   open: boolean
   onClose: () => void
   onSave?: (shortcuts: KeybindShortcuts) => void
+  onSwitchMicrophone?: (deviceId: string) => void
+  onSwitchCamera?: (deviceId: string) => void
 }
 
-export function KeybindSettingsModal({ open, onClose, onSave }: KeybindSettingsModalProps) {
+export function KeybindSettingsModal({
+  open,
+  onClose,
+  onSave,
+  onSwitchMicrophone,
+  onSwitchCamera,
+}: KeybindSettingsModalProps) {
   const [keybinds, setKeybinds] = useState<KeybindShortcuts>(loadSavedKeybinds)
   const [listeningAction, setListeningAction] = useState<'toggleMute' | 'toggleDeafen' | null>(null)
   const [prevOpen, setPrevOpen] = useState(open)
   const isElectron = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
+
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfoItem[]>([])
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfoItem[]>([])
+  const [selectedAudioId, setSelectedAudioId] = useState<string>(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('discordia:selected-microphone') || '' : '',
+  )
+  const [selectedVideoId, setSelectedVideoId] = useState<string>(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('discordia:selected-camera') || '' : '',
+  )
+
+  useEffect(() => {
+    if (!open) return
+    const enumerate = async () => {
+      try {
+        if (!navigator.mediaDevices?.enumerateDevices) return
+        const devs = await navigator.mediaDevices.enumerateDevices()
+        const mics = devs
+          .filter((d) => d.kind === 'audioinput')
+          .map((d, i) => ({
+            deviceId: d.deviceId,
+            label: d.label || `Microfone ${i + 1}`,
+          }))
+        const cams = devs
+          .filter((d) => d.kind === 'videoinput')
+          .map((d, i) => ({
+            deviceId: d.deviceId,
+            label: d.label || `Câmera ${i + 1}`,
+          }))
+        setAudioDevices(mics)
+        setVideoDevices(cams)
+      } catch (err) {
+        console.warn('[Dispositivos] Falha ao enumerar dispositivos:', err)
+      }
+    }
+    void enumerate()
+  }, [open])
 
   if (open !== prevOpen) {
     setPrevOpen(open)
     if (open) {
       setKeybinds(loadSavedKeybinds())
       setListeningAction(null)
+      setSelectedAudioId(localStorage.getItem('discordia:selected-microphone') || '')
+      setSelectedVideoId(localStorage.getItem('discordia:selected-camera') || '')
     }
+  }
+
+  const handleSelectAudio = (id: string) => {
+    setSelectedAudioId(id)
+    localStorage.setItem('discordia:selected-microphone', id)
+    onSwitchMicrophone?.(id)
+  }
+
+  const handleSelectVideo = (id: string) => {
+    setSelectedVideoId(id)
+    localStorage.setItem('discordia:selected-camera', id)
+    onSwitchCamera?.(id)
   }
 
   useEffect(() => {
@@ -83,7 +146,7 @@ export function KeybindSettingsModal({ open, onClose, onSave }: KeybindSettingsM
           <Keyboard size={18} />
         </span>
       }
-      title="Atalhos de Teclado"
+      title="Configurações e Atalhos"
       footer={
         <div className="flex w-full items-center justify-between gap-2">
           <button
@@ -109,6 +172,56 @@ export function KeybindSettingsModal({ open, onClose, onSave }: KeybindSettingsM
       }
     >
       <div className="space-y-4">
+        {/* Seletor de Câmera e Microfone */}
+        <div className="space-y-3 rounded-xl border border-white/10 bg-dc-darkest p-3">
+          <div className="flex items-center gap-2 border-b border-white/5 pb-2">
+            <Settings size={15} className="text-dc-brand-soft" />
+            <span className="text-xs font-bold text-white uppercase tracking-wider">Dispositivos de Entrada</span>
+          </div>
+
+          <div className="space-y-2.5">
+            <div>
+              <label htmlFor="select-camera-device" className="flex items-center gap-1.5 text-xs font-semibold text-white/90 mb-1">
+                <Video size={14} className="text-emerald-400" />
+                <span>Webcam / Câmera:</span>
+              </label>
+              <select
+                id="select-camera-device"
+                value={selectedVideoId}
+                onChange={(e) => handleSelectVideo(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-dc-darker px-3 py-2 text-xs font-medium text-white transition focus:border-dc-brand focus:outline-none"
+              >
+                <option value="">Câmera padrão do sistema</option>
+                {videoDevices.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="select-mic-device" className="flex items-center gap-1.5 text-xs font-semibold text-white/90 mb-1">
+                <Mic size={14} className="text-dc-brand-soft" />
+                <span>Microfone:</span>
+              </label>
+              <select
+                id="select-mic-device"
+                value={selectedAudioId}
+                onChange={(e) => handleSelectAudio(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-dc-darker px-3 py-2 text-xs font-medium text-white transition focus:border-dc-brand focus:outline-none"
+              >
+                <option value="">Microfone padrão do sistema</option>
+                {audioDevices.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+
         {isElectron && (
           <div className="rounded-lg border border-emerald-500/25 bg-emerald-950/20 px-3 py-2 text-[11px] text-emerald-200">
             <span className="font-semibold">Atalhos Globais Ativos:</span> funcionam em segundo plano mesmo com jogos em tela cheia.

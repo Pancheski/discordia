@@ -50,6 +50,8 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     toggleMute,
     toggleDeafen,
     toggleCamera,
+    switchCamera,
+    switchMicrophone,
     startScreenShare,
     stopScreenShare,
     setScreenPreset,
@@ -1005,6 +1007,8 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
         open={keybindsModalOpen}
         onClose={() => setKeybindsModalOpen(false)}
         onSave={(shortcuts) => setActiveKeybinds(shortcuts)}
+        onSwitchCamera={switchCamera}
+        onSwitchMicrophone={switchMicrophone}
       />
 
       <DesktopScreenPickerModal

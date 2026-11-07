@@ -312,6 +312,23 @@ export class RoomManager {
     return true
   }
 
+  async switchMicrophone(deviceId: string): Promise<boolean> {
+    if (this.destroyed) return false
+    localStorage.setItem('discordia:selected-microphone', deviceId)
+    const ok = await this.acquireMicrophone(false, deviceId)
+    this.emit()
+    return ok
+  }
+
+  async switchCamera(deviceId: string): Promise<void> {
+    if (this.destroyed) return
+    localStorage.setItem('discordia:selected-camera', deviceId)
+    if (this.cameraStream) {
+      this.stopCamera(true)
+      await this.startCamera(deviceId)
+    }
+  }
+
   toggleMute(): void {
     if (this.destroyed) return
     if (!this.local.micAvailable) {
@@ -546,7 +563,7 @@ export class RoomManager {
     }
   }
 
-  async startCamera(): Promise<void> {
+  async startCamera(preferredDeviceId?: string): Promise<void> {
     if (this.destroyed || this.cameraStream) return
     const md = navigator.mediaDevices
     if (!md?.getUserMedia) {
@@ -554,30 +571,47 @@ export class RoomManager {
       return
     }
 
+    const savedCameraId = preferredDeviceId || localStorage.getItem('discordia:selected-camera') || undefined
+
     let stream: MediaStream
     try {
-      // 1ª tentativa: Resolução ideal de 720p sem travas obrigatórias
+      // 1ª tentativa: Resolução ideal de 720p ou câmera selecionada
       stream = await md.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 },
-        },
+        video: savedCameraId
+          ? {
+              deviceId: { exact: savedCameraId },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              frameRate: { ideal: 30 },
+            }
+          : {
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              frameRate: { ideal: 30 },
+            },
         audio: false,
       })
     } catch (firstErr: unknown) {
-      const errName = firstErr instanceof DOMException ? firstErr.name : ''
-      // 2ª tentativa: Fallback básico irrestrito caso o dispositivo não suporte 720p ou constraints específicas
-      if (errName === 'OverconstrainedError' || errName === 'ConstraintNotSatisfiedError') {
-        try {
+      console.warn('[WebRTC] 1ª tentativa de getUserMedia (câmera) falhou, tentando fallback:', firstErr)
+      try {
+        // Fallback progressivo: tenta dispositivo selecionado sem constraints de resolução
+        if (savedCameraId) {
+          stream = await md.getUserMedia({
+            video: { deviceId: { exact: savedCameraId } },
+            audio: false,
+          })
+        } else {
+          // Fallback absoluto sem constraints
           stream = await md.getUserMedia({ video: true, audio: false })
-        } catch (fallbackErr: unknown) {
-          this.handleCameraError(fallbackErr)
+        }
+      } catch (fallbackErr: unknown) {
+        // Último fallback absoluto
+        try {
+          stream = await md.getUserMedia({ video: true })
+        } catch (finalErr: unknown) {
+          this.handleCameraError(finalErr || fallbackErr || firstErr)
           return
         }
-      } else {
-        this.handleCameraError(firstErr)
-        return
       }
     }
 
@@ -595,32 +629,50 @@ export class RoomManager {
       })
     }
 
+    // Atualiza imediatamente o estado da câmera local para aparecer na tela na mesma hora
     this.cameraStream = stream
     this.local.cameraEnabled = true
     this.local.cameraStream = stream
-
-    this.updatePresenceHeartbeat()
-    for (const link of this.links.values()) {
-      this.callPeer(link, 'camera')
-    }
-    this.broadcastState()
     this.toast('success', '📹 Câmera ativada.')
     this.emit()
+
+    // Sincroniza presença e inicia chamadas com os peers em try/catch isolado
+    try {
+      this.updatePresenceHeartbeat()
+      for (const link of this.links.values()) {
+        try {
+          this.callPeer(link, 'camera')
+        } catch (callErr) {
+          console.warn(`[WebRTC] Falha ao enviar chamada de câmera para ${link.id}:`, callErr)
+        }
+      }
+      this.broadcastState()
+    } catch (err) {
+      console.warn('[WebRTC] Erro ao sincronizar estado de câmera com peers:', err)
+    }
   }
 
   private handleCameraError(err: unknown): void {
-    const name = err instanceof DOMException ? err.name : (err as { name?: string })?.name || ''
-    if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+    const errObj = err as { name?: string; message?: string }
+    const name = err instanceof DOMException ? err.name : errObj?.name || 'Error'
+    const message = errObj?.message || describeError(err)
+
+    console.error(`[WebRTC] Erro ao iniciar câmera (${name}: ${message})`, err)
+
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
       this.toast(
-        'warning',
-        "Permissão de câmera negada. No navegador, clique no ícone de cadeado/configurações ao lado do link e mude a Câmera para 'Permitir'. No Windows, verifique se 'Permitir que os aplicativos acessem a câmera' está ativado nas Configurações do sistema.",
+        'error',
+        'A câmera está sendo usada por outro aplicativo (ou outra aba/janela aberta). Feche os outros programas que usam a câmera e tente novamente.',
       )
     } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-      this.toast('warning', 'Nenhuma webcam física foi detectada no computador.')
-    } else if (name === 'NotReadableError' || name === 'TrackStartError') {
-      this.toast('error', 'A webcam já está em uso por outro aplicativo.')
+      this.toast('warning', 'Nenhuma câmera encontrada conectada ao PC.')
+    } else if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+      this.toast(
+        'warning',
+        `Bloqueado pelo navegador ou pelo Windows (${message}). Verifique Configurações do Windows > Privacidade > Câmera.`,
+      )
     } else {
-      this.toast('error', `Falha ao ligar a câmera: ${describeError(err)}`)
+      this.toast('error', `Erro ao iniciar câmera (${name}: ${message})`)
     }
   }
 
@@ -1414,9 +1466,11 @@ export class RoomManager {
   //  Mídia local (Desacoplada da Entrada na Sala)
   // ════════════════════════════════════════════════════════════════════
 
-  private async acquireMicrophone(initial: boolean): Promise<boolean> {
+  private async acquireMicrophone(initial: boolean, preferredDeviceId?: string): Promise<boolean> {
     let stream: MediaStream | null = null
     const md = navigator.mediaDevices
+
+    const savedMicId = preferredDeviceId || localStorage.getItem('discordia:selected-microphone') || undefined
 
     try {
       if (!md?.getUserMedia) {
@@ -1429,6 +1483,7 @@ export class RoomManager {
       stream = await Promise.race([
         md.getUserMedia({
           audio: {
+            deviceId: savedMicId ? { ideal: savedMicId } : undefined,
             echoCancellation: true,
             noiseSuppression: true,
             // autoGainControl DESATIVADO evita o bombeamento dinâmico que corta o início/fim das palavras

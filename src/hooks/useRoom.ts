@@ -133,9 +133,14 @@ export function useRoom() {
 
   const toggleMute = useCallback(() => managerRef.current?.toggleMute(), [])
   const toggleDeafen = useCallback(() => managerRef.current?.toggleDeafen(), [])
-  const startCamera = useCallback(() => void managerRef.current?.startCamera(), [])
+  const startCamera = useCallback(
+    (deviceId?: string) => void managerRef.current?.startCamera(deviceId),
+    [],
+  )
   const stopCamera = useCallback(() => managerRef.current?.stopCamera(), [])
   const toggleCamera = useCallback(() => managerRef.current?.toggleCamera(), [])
+  const switchCamera = useCallback((deviceId: string) => managerRef.current?.switchCamera(deviceId), [])
+  const switchMicrophone = useCallback((deviceId: string) => managerRef.current?.switchMicrophone(deviceId), [])
   const requestCameraStream = useCallback(
     (targetPeerId: string) => managerRef.current?.requestCameraStream(targetPeerId),
     [],
@@ -250,6 +255,8 @@ export function useRoom() {
     startCamera,
     stopCamera,
     toggleCamera,
+    switchCamera,
+    switchMicrophone,
     requestCameraStream,
     startScreenShare,
     stopScreenShare,
