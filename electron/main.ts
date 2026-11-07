@@ -307,9 +307,21 @@ function createMainWindow(): void {
       .catch(() => callback({}))
   })
 
+  const allowedPermissions = new Set([
+    'media',
+    'videoCapture',
+    'audioCapture',
+    'display-capture',
+    'fullscreen',
+    'notifications',
+  ])
+
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    const allowed = ['media', 'display-capture', 'fullscreen', 'notifications', 'audioCapture']
-    callback(allowed.includes(permission))
+    callback(allowedPermissions.has(permission))
+  })
+
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+    return allowedPermissions.has(permission)
   })
 
   const devServerUrl = process.env.VITE_DEV_SERVER_URL

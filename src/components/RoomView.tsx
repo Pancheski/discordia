@@ -1,5 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Download, Eye, Gamepad2, Hash, Maximize2, MessageSquare, MicOff, MonitorUp, Power, Rocket, Users, Volume2, VolumeX } from 'lucide-react'
+import {
+  Download,
+  Eye,
+  Gamepad2,
+  Hash,
+  Maximize2,
+  MessageSquare,
+  MicOff,
+  Minimize2,
+  MonitorUp,
+  Power,
+  Rocket,
+  Users,
+  Video,
+  Volume2,
+  VolumeX,
+  X,
+} from 'lucide-react'
 import { AppLauncherModal } from './AppLauncherModal'
 import { AudioSink } from './AudioSink'
 import { ChatSidebar } from './ChatSidebar'
@@ -28,10 +45,11 @@ interface RoomViewProps {
 }
 
 export function RoomView({ snapshot, controller }: RoomViewProps) {
-  const { local, participants, room, voiceStreams, screenStreams } = snapshot
+  const { local, participants, room, voiceStreams, screenStreams, localCameraStream, cameraStreams } = snapshot
   const {
     toggleMute,
     toggleDeafen,
+    toggleCamera,
     startScreenShare,
     stopScreenShare,
     setScreenPreset,
@@ -82,7 +100,10 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
   const [remotePlayModalOpen, setRemotePlayModalOpen] = useState(false)
   const [minimizedApp, setMinimizedApp] = useState<AppActivityId>(null)
   const [watchedScreenId, setWatchedScreenId] = useState<string | null>(null)
-  const [stagePriority, setStagePriority] = useState<'app' | 'screen'>('app')
+  const [spotlightTileKey, setSpotlightTileKey] = useState<string | null>(null)
+  const [stagePriority, setStagePriority] = useState<'app' | 'screen' | 'spotlight'>('app')
+  const [isSpotlightFullscreen, setIsSpotlightFullscreen] = useState(false)
+  const spotlightContainerRef = useRef<HTMLDivElement | null>(null)
   const [autoplayBlocked, setAutoplayBlocked] = useState(false)
   const [audioUnlockSignal, setAudioUnlockSignal] = useState(0)
   const [readUpTo, setReadUpTo] = useState(0)
@@ -203,14 +224,138 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     [screens, watchedScreenId],
   )
 
+  const tiles = useMemo(
+    () => [
+      {
+        key: 'local',
+        peerId: local.peerId,
+        name: local.name,
+        speaking: local.speaking,
+        muted: local.muted,
+        sharing: !!local.screenStream,
+        cameraStream: localCameraStream ?? local.cameraStream,
+        isLocal: true,
+        micAvailable: local.micAvailable,
+        connectionState: 'connected' as const,
+        voiceVolume: 1,
+        screenId: local.screenStream ? 'local' : null,
+      },
+      ...participants.map((p) => {
+        const hasScreen = Boolean(screenStreams[p.peerId] ?? p.screenStream) || p.sharing
+        const camStream = cameraStreams[p.peerId] ?? p.cameraStream ?? null
+        return {
+          key: p.peerId,
+          peerId: p.peerId,
+          name: p.name,
+          speaking: p.speaking,
+          muted: p.muted,
+          sharing: hasScreen,
+          cameraStream: camStream,
+          isLocal: false,
+          micAvailable: true,
+          connectionState: p.connectionState,
+          voiceVolume: p.voiceVolume,
+          screenId: hasScreen ? p.peerId : null,
+        }
+      }),
+    ],
+    [
+      local.peerId,
+      local.name,
+      local.speaking,
+      local.muted,
+      local.screenStream,
+      local.cameraStream,
+      local.micAvailable,
+      localCameraStream,
+      participants,
+      screenStreams,
+      cameraStreams,
+    ],
+  )
+
+  const spotlightTile = useMemo(
+    () => (spotlightTileKey ? (tiles.find((t) => t.key === spotlightTileKey) ?? null) : null),
+    [tiles, spotlightTileKey],
+  )
+
   const activeStageApp: AppActivityId = activeApp && minimizedApp !== activeApp ? activeApp : null
   const isAppMinimized = Boolean(activeApp && minimizedApp === activeApp)
-  const hasStageContent = Boolean(activeStageApp || watchedScreen)
+  const hasStageContent = Boolean(activeStageApp || watchedScreen || spotlightTile)
 
-  const showingScreenOnStage = Boolean(
-    watchedScreen && (!activeStageApp || stagePriority === 'screen'),
+  const showingSpotlightOnStage = Boolean(
+    spotlightTile &&
+      (stagePriority === 'spotlight' || (!activeStageApp && !watchedScreen)),
   )
-  const showingAppOnStage = Boolean(activeStageApp && !showingScreenOnStage)
+  const showingScreenOnStage = Boolean(
+    !showingSpotlightOnStage &&
+      watchedScreen &&
+      (!activeStageApp || stagePriority === 'screen'),
+  )
+  const showingAppOnStage = Boolean(
+    activeStageApp && !showingScreenOnStage && !showingSpotlightOnStage,
+  )
+
+  const handleToggleSpotlightFullscreen = useCallback(async () => {
+    const el = spotlightContainerRef.current
+    if (!el) return
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen()
+      } else {
+        await el.requestFullscreen()
+      }
+    } catch (err) {
+      console.warn('[Spotlight] Falha ao alternar tela cheia:', err)
+    }
+  }, [])
+
+  const handleExitSpotlight = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {})
+    }
+    setSpotlightTileKey(null)
+    if (watchedScreenId) {
+      setStagePriority('screen')
+    } else {
+      setStagePriority('app')
+    }
+  }, [watchedScreenId])
+
+  const handleTileDoubleClick = useCallback(
+    (tileKey: string) => {
+      if (spotlightTileKey === tileKey && showingSpotlightOnStage) {
+        if (document.fullscreenElement) {
+          void document.exitFullscreen().catch(() => {})
+        } else {
+          handleExitSpotlight()
+        }
+      } else {
+        setSpotlightTileKey(tileKey)
+        setStagePriority('spotlight')
+      }
+    },
+    [spotlightTileKey, showingSpotlightOnStage, handleExitSpotlight],
+  )
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsSpotlightFullscreen(Boolean(document.fullscreenElement))
+    }
+    document.addEventListener('fullscreenchange', onFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
+  }, [])
+
+  useEffect(() => {
+    if (!spotlightTileKey) return
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !document.fullscreenElement) {
+        handleExitSpotlight()
+      }
+    }
+    window.addEventListener('keydown', onEsc)
+    return () => window.removeEventListener('keydown', onEsc)
+  }, [spotlightTileKey, handleExitSpotlight])
 
   const copyLink = useCallback(async () => {
     const ok = await copyToClipboard(buildRoomLink(room))
@@ -331,38 +476,6 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [activeKeybinds, toggleMute, toggleDeafen])
-
-  const tiles = [
-    {
-      key: 'local',
-      peerId: local.peerId,
-      name: local.name,
-      speaking: local.speaking,
-      muted: local.muted,
-      sharing: !!local.screenStream,
-      isLocal: true,
-      micAvailable: local.micAvailable,
-      connectionState: 'connected' as const,
-      voiceVolume: 1,
-      screenId: local.screenStream ? 'local' : null,
-    },
-    ...participants.map((p) => {
-      const hasScreen = Boolean(screenStreams[p.peerId] ?? p.screenStream) || p.sharing
-      return {
-        key: p.peerId,
-        peerId: p.peerId,
-        name: p.name,
-        speaking: p.speaking,
-        muted: p.muted,
-        sharing: hasScreen,
-        isLocal: false,
-        micAvailable: true,
-        connectionState: p.connectionState,
-        voiceVolume: p.voiceVolume,
-        screenId: hasScreen ? p.peerId : null,
-      }
-    }),
-  ]
 
   const meshState = useMemo(() => {
     if (participants.some((p) => p.connectionState === 'error')) return 'error' as const
@@ -561,37 +674,108 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
         <section className="flex min-h-0 flex-1 flex-col gap-3 p-3 sm:p-4">
           {hasStageContent ? (
             <>
-              {activeStageApp && watchedScreen && (
+              {[Boolean(activeStageApp), Boolean(watchedScreen), Boolean(spotlightTile)].filter(Boolean).length > 1 && (
                 <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setStagePriority('app')}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                      showingAppOnStage
-                        ? 'bg-dc-brand text-white shadow'
-                        : 'bg-dc-darker text-dc-muted hover:text-white'
-                    }`}
-                  >
-                    <Rocket size={13} />
-                    <span>{appLabel}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setStagePriority('screen')}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                      showingScreenOnStage
-                        ? 'bg-dc-red text-white shadow'
-                        : 'bg-dc-darker text-dc-muted hover:text-white'
-                    }`}
-                  >
-                    <Eye size={13} />
-                    <span>{watchedScreen.name}</span>
-                  </button>
+                  {activeStageApp && (
+                    <button
+                      type="button"
+                      onClick={() => setStagePriority('app')}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                        showingAppOnStage
+                          ? 'bg-dc-brand text-white shadow'
+                          : 'bg-dc-darker text-dc-muted hover:text-white'
+                      }`}
+                    >
+                      <Rocket size={13} />
+                      <span>{appLabel}</span>
+                    </button>
+                  )}
+                  {watchedScreen && (
+                    <button
+                      type="button"
+                      onClick={() => setStagePriority('screen')}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                        showingScreenOnStage
+                          ? 'bg-dc-red text-white shadow'
+                          : 'bg-dc-darker text-dc-muted hover:text-white'
+                      }`}
+                    >
+                      <Eye size={13} />
+                      <span>{watchedScreen.name}</span>
+                    </button>
+                  )}
+                  {spotlightTile && (
+                    <button
+                      type="button"
+                      onClick={() => setStagePriority('spotlight')}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                        showingSpotlightOnStage
+                          ? 'bg-emerald-600 text-white shadow'
+                          : 'bg-dc-darker text-dc-muted hover:text-white'
+                      }`}
+                    >
+                      <Video size={13} />
+                      <span>{spotlightTile.name}</span>
+                    </button>
+                  )}
                 </div>
               )}
 
               <div className="flex-1 min-h-0 w-full h-full rounded-xl overflow-hidden">
-                {showingScreenOnStage && watchedScreen ? (
+                {showingSpotlightOnStage && spotlightTile ? (
+                  <div
+                    ref={spotlightContainerRef}
+                    className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-xl bg-dc-darkest"
+                  >
+                    <ParticipantTile
+                      key={spotlightTile.key}
+                      peerId={spotlightTile.peerId}
+                      name={spotlightTile.name}
+                      speaking={spotlightTile.speaking}
+                      muted={spotlightTile.muted}
+                      sharing={spotlightTile.sharing}
+                      cameraStream={spotlightTile.cameraStream}
+                      isLocal={spotlightTile.isLocal}
+                      micAvailable={spotlightTile.micAvailable}
+                      connectionState={spotlightTile.connectionState}
+                      spotlight
+                      voiceVolume={spotlightTile.voiceVolume}
+                      onVoiceVolumeChange={
+                        !spotlightTile.isLocal && spotlightTile.peerId
+                          ? (v) => setVolume(spotlightTile.peerId, 'mic', v)
+                          : undefined
+                      }
+                      onWatchScreen={
+                        spotlightTile.screenId ? () => handleWatchScreen(spotlightTile.screenId!) : undefined
+                      }
+                      isWatchingScreen={false}
+                      onChallengeRps={challengeRps}
+                      onDoubleClick={() => handleTileDoubleClick(spotlightTile.key)}
+                    />
+
+                    {/* Botões discretos no canto superior direito do vídeo em destaque */}
+                    <div className="absolute right-3 top-3 z-20 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleToggleSpotlightFullscreen()}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-black/70 px-3 py-1.5 text-xs font-bold text-white shadow-lg backdrop-blur-md transition hover:bg-dc-brand"
+                        title={isSpotlightFullscreen ? 'Sair da Tela Cheia' : 'Tela Cheia Real'}
+                      >
+                        {isSpotlightFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                        <span>{isSpotlightFullscreen ? 'Sair da Tela Cheia' : '⛶ Tela Cheia Real'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleExitSpotlight}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-black/70 px-3 py-1.5 text-xs font-bold text-white shadow-lg backdrop-blur-md transition hover:bg-dc-red"
+                        title="Voltar para Grade (Esc)"
+                      >
+                        <X size={14} />
+                        <span>✕ Voltar para Grade</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : showingScreenOnStage && watchedScreen ? (
                   <ScreenStage
                     key={watchedScreen.id}
                     screen={watchedScreen}
@@ -649,18 +833,21 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                       onSelect={() => handleWatchScreen(s.id)}
                     />
                   ))}
-                {tiles.map(({ key, screenId, voiceVolume, ...t }) => (
-                  <ParticipantTile
-                    key={key}
-                    {...t}
-                    compact
-                    voiceVolume={voiceVolume}
-                    onVoiceVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'mic', v) : undefined}
-                    onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
-                    isWatchingScreen={Boolean(screenId && watchedScreen?.id === screenId && showingScreenOnStage)}
-                    onChallengeRps={challengeRps}
-                  />
-                ))}
+                {tiles
+                  .filter((t) => !(showingSpotlightOnStage && spotlightTile?.key === t.key))
+                  .map(({ key, screenId, voiceVolume, ...t }) => (
+                    <ParticipantTile
+                      key={key}
+                      {...t}
+                      compact
+                      voiceVolume={voiceVolume}
+                      onVoiceVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'mic', v) : undefined}
+                      onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
+                      isWatchingScreen={Boolean(screenId && watchedScreen?.id === screenId && showingScreenOnStage)}
+                      onChallengeRps={challengeRps}
+                      onDoubleClick={() => handleTileDoubleClick(key)}
+                    />
+                  ))}
               </div>
             </>
           ) : (
@@ -681,6 +868,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                           onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
                           isWatchingScreen={false}
                           onChallengeRps={challengeRps}
+                          onDoubleClick={() => handleTileDoubleClick(key)}
                         />
                       </div>
                     </div>
@@ -705,6 +893,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                       onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
                       isWatchingScreen={false}
                       onChallengeRps={challengeRps}
+                      onDoubleClick={() => handleTileDoubleClick(key)}
                     />
                   ))}
                 </div>
@@ -753,6 +942,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           muted={local.muted}
           deafened={local.deafened}
           micAvailable={local.micAvailable}
+          cameraEnabled={Boolean(localCameraStream || local.cameraStream || local.cameraEnabled)}
           sharing={!!local.screenStream}
           screenSupported={screenSupported}
           screenPreset={local.screenPreset}
@@ -769,6 +959,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           meshState={meshState}
           onToggleMute={toggleMute}
           onToggleDeafen={toggleDeafen}
+          onToggleCamera={toggleCamera}
           onToggleScreen={toggleScreen}
           onStartScreenShare={(preset) => handleRequestScreenShare(preset)}
           onTogglePreset={() => void setScreenPreset(local.screenPreset === 'game' ? 'quality' : 'game')}

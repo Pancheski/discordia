@@ -73,8 +73,10 @@ interface PeerLink {
   gamepadChannel: RTCDataChannel | null
   micOut: MediaConnection | null
   screenOut: MediaConnection | null
+  cameraOut: MediaConnection | null
   micIn: MediaConnection | null
   screenIn: MediaConnection | null
+  cameraIn: MediaConnection | null
   detector: RemoteSpeakingDetector | null
   teardownTimer: number | null
   helloTimer: number | null
@@ -140,8 +142,10 @@ export class RoomManager {
   private reconnectTimer: number | null = null
   private micStream: MediaStream | null = null
   private screenStream: MediaStream | null = null
+  private cameraStream: MediaStream | null = null
   private readonly voiceStreams: Record<string, MediaStream> = {}
   private readonly screenStreams: Record<string, MediaStream> = {}
+  private readonly cameraStreams: Record<string, MediaStream> = {}
   private localDetector: LocalSpeakingDetector | null = null
   private discoveryTimer: number | null = null
   private statsTimer: number | null = null
@@ -179,6 +183,8 @@ export class RoomManager {
     deafened: false,
     micAvailable: false,
     speaking: false,
+    cameraEnabled: false,
+    cameraStream: null,
     screenStream: null,
     screenHasAudio: false,
     screenPreset: 'quality',
@@ -287,7 +293,12 @@ export class RoomManager {
 
     const presence = getPresence()
     void presence
-      .heartbeat(this.room, this.room, { id: this.local.peerId, name: this.local.name, joinedAt: this.joinedAt }, 1)
+      .heartbeat(
+        this.room,
+        this.room,
+        { id: this.local.peerId, name: this.local.name, joinedAt: this.joinedAt, hasCamera: Boolean(this.cameraStream) },
+        1,
+      )
       .catch((err) => console.warn('[WebRTC] Falha ao registrar presença inicial:', err))
 
     // Escuta em tempo real `discordia_rooms/${roomId}/members` via Firebase onValue
@@ -522,6 +533,149 @@ export class RoomManager {
         toPeerId: targetPeerId,
       })
     }
+  }
+
+  // ─── Webcam (Chamada de Vídeo Independente) ────────────────────────────
+
+  toggleCamera(): void {
+    if (this.destroyed) return
+    if (this.cameraStream) {
+      this.stopCamera()
+    } else {
+      void this.startCamera()
+    }
+  }
+
+  async startCamera(): Promise<void> {
+    if (this.destroyed || this.cameraStream) return
+    const md = navigator.mediaDevices
+    if (!md?.getUserMedia) {
+      this.toast('error', 'Seu navegador não suporta captura de câmera (getUserMedia).')
+      return
+    }
+
+    let stream: MediaStream
+    try {
+      stream = await md.getUserMedia({
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 },
+        },
+        audio: false,
+      })
+    } catch (err) {
+      const name = err instanceof DOMException ? err.name : ''
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        this.toast('warning', 'Permissão de câmera negada pelo navegador ou sistema.')
+      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        this.toast('warning', 'Nenhuma webcam detectada neste dispositivo.')
+      } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+        this.toast('error', 'A webcam já está em uso por outro aplicativo.')
+      } else {
+        this.toast('error', `Falha ao ligar a câmera: ${describeError(err)}`)
+      }
+      return
+    }
+
+    if (this.destroyed) {
+      stream.getTracks().forEach((t) => t.stop())
+      return
+    }
+
+    const videoTrack = stream.getVideoTracks()[0]
+    if (videoTrack) {
+      videoTrack.addEventListener('ended', () => {
+        if (this.cameraStream === stream) {
+          this.stopCamera()
+        }
+      })
+    }
+
+    this.cameraStream = stream
+    this.local.cameraEnabled = true
+    this.local.cameraStream = stream
+
+    this.updatePresenceHeartbeat()
+    for (const link of this.links.values()) {
+      this.callPeer(link, 'camera')
+    }
+    this.broadcastState()
+    this.toast('success', '📹 Câmera ativada.')
+    this.emit()
+  }
+
+  stopCamera(silent = false): void {
+    const stream = this.cameraStream
+    if (!stream) return
+    this.cameraStream = null
+    this.local.cameraEnabled = false
+    this.local.cameraStream = null
+
+    stream.getTracks().forEach((t) => t.stop())
+
+    for (const link of this.links.values()) {
+      if (link.cameraOut) {
+        const call = link.cameraOut
+        link.cameraOut = null
+        try {
+          call.close()
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    if (!this.destroyed) {
+      this.updatePresenceHeartbeat()
+      if (this.local.peerId) {
+        this.broadcastMsg({ type: 'camera:stop', peerId: this.local.peerId })
+      }
+      this.broadcastState()
+      if (!silent) this.toast('info', 'Câmera desligada.')
+      this.emit()
+    }
+  }
+
+  requestCameraStream(targetPeerId: string): void {
+    if (this.destroyed || !this.local.peerId || !targetPeerId || targetPeerId === this.local.peerId) return
+    const currentStream = this.cameraStreams[targetPeerId]
+    const track = currentStream?.getVideoTracks()[0]
+    const isLive = track && track.readyState === 'live'
+    if (isLive) return
+
+    const link = this.links.get(targetPeerId)
+    if (link?.data?.open) {
+      this.send(link.data, {
+        type: 'camera:request-stream',
+        fromPeerId: this.local.peerId,
+        toPeerId: targetPeerId,
+      })
+    } else {
+      this.broadcastMsg({
+        type: 'camera:request-stream',
+        fromPeerId: this.local.peerId,
+        toPeerId: targetPeerId,
+      })
+    }
+  }
+
+  private updatePresenceHeartbeat(): void {
+    if (this.destroyed || !this.room || !this.local.peerId) return
+    const activePeers = [...this.links.values()].filter((l) => l.visible || l.greeted).length + 1
+    void getPresence()
+      .heartbeat(
+        this.room,
+        this.room,
+        {
+          id: this.local.peerId,
+          name: this.local.name,
+          joinedAt: this.joinedAt,
+          hasCamera: Boolean(this.cameraStream),
+        },
+        activePeers,
+      )
+      .catch(() => undefined)
   }
 
   setParticipantVolume(peerId: string, kind: MediaKind, value: number): void {
@@ -1217,6 +1371,7 @@ export class RoomManager {
     }
 
     this.stopScreenShare(true)
+    this.stopCamera(true)
     this.chat.dispose()
 
     for (const id of [...this.links.keys()]) {
@@ -1375,6 +1530,8 @@ export class RoomManager {
     this.micStream = null
     this.screenStream?.getTracks().forEach((t) => t.stop())
     this.screenStream = null
+    this.cameraStream?.getTracks().forEach((t) => t.stop())
+    this.cameraStream = null
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -1556,12 +1713,16 @@ export class RoomManager {
         if (!hasMedia) {
           this.callPeer(link, 'mic')
         }
-        if (this.screenStream && !link.screenOut) {
-          this.callPeer(link, 'screen')
-        }
       } else if (!hasData || !hasMedia) {
         // Agenda verificação de fallback caso o par com ID maior demore mais de 2.5s
         this.schedulePeerRecovery(m.id)
+      }
+
+      if (this.screenStream && !link.screenOut) {
+        this.callPeer(link, 'screen')
+      }
+      if (this.cameraStream && !link.cameraOut) {
+        this.callPeer(link, 'camera')
       }
     }
 
@@ -1611,6 +1772,7 @@ export class RoomManager {
         }
         if (!link.micOut && !link.info.micStream) this.callPeer(link, 'mic')
         if (this.screenStream && !link.screenOut) this.callPeer(link, 'screen')
+        if (this.cameraStream && !link.cameraOut) this.callPeer(link, 'camera')
         continue
       }
       if (this.pending.has(id)) continue
@@ -1701,8 +1863,10 @@ export class RoomManager {
       gamepadChannel: null,
       micOut: null,
       screenOut: null,
+      cameraOut: null,
       micIn: null,
       screenIn: null,
+      cameraIn: null,
       detector: null,
       teardownTimer: null,
       helloTimer: null,
@@ -1716,9 +1880,11 @@ export class RoomManager {
         name: typeof name === 'string' && name.trim() ? sanitizeName(name) : 'Conectando…',
         muted: false,
         sharing: false,
+        hasCamera: false,
         speaking: false,
         micStream: null,
         screenStream: null,
+        cameraStream: null,
         voiceVolume: 1,
         screenVolume: 1,
         connectionState: 'connecting',
@@ -1798,6 +1964,7 @@ export class RoomManager {
       this.schedulePeerRecovery(id)
     }
     if (this.screenStream && !link.screenOut) this.callPeer(link, 'screen')
+    if (this.cameraStream && !link.cameraOut) this.callPeer(link, 'camera')
     this.emit()
   }
 
@@ -1807,6 +1974,7 @@ export class RoomManager {
       name: this.local.name,
       muted: this.local.muted,
       sharing: !!this.screenStream,
+      hasCamera: !!this.cameraStream,
     })
   }
 
@@ -1979,6 +2147,9 @@ export class RoomManager {
       if (this.screenStream && !current.screenOut) {
         this.callPeer(current, 'screen')
       }
+      if (this.cameraStream && !current.cameraOut) {
+        this.callPeer(current, 'camera')
+      }
     }, PEER_RECONNECT_DELAY_MS)
   }
 
@@ -2008,12 +2179,24 @@ export class RoomManager {
     }, DATA_TEARDOWN_GRACE_MS * 2)
   }
 
-  private markPeerGreeted(link: PeerLink, name: string, muted: boolean, sharing: boolean): void {
+  private markPeerGreeted(
+    link: PeerLink,
+    name: string,
+    muted: boolean,
+    sharing: boolean,
+    hasCamera?: boolean,
+  ): void {
     link.info.name = sanitizeName(name)
     link.info.muted = muted
     link.info.connectionState = 'connected'
     link.visible = true
     this.applyRemoteSharing(link, sharing)
+    if (typeof hasCamera === 'boolean') {
+      this.applyRemoteCamera(link, hasCamera)
+    }
+    if (this.cameraStream && !link.cameraOut) {
+      this.callPeer(link, 'camera')
+    }
 
     if (link.helloTimer !== null) {
       window.clearInterval(link.helloTimer)
@@ -2060,25 +2243,29 @@ export class RoomManager {
 
     switch (msg.type) {
       case 'hello': {
-        this.markPeerGreeted(link, msg.name, !!msg.muted, !!msg.sharing)
+        this.markPeerGreeted(link, msg.name, !!msg.muted, !!msg.sharing, msg.hasCamera)
         if (link.data?.open) {
           this.send(link.data, {
             type: 'hello-ack',
             name: this.local.name,
             muted: this.local.muted,
             sharing: !!this.screenStream,
+            hasCamera: !!this.cameraStream,
           })
         }
         break
       }
       case 'hello-ack': {
-        this.markPeerGreeted(link, msg.name, !!msg.muted, !!msg.sharing)
+        this.markPeerGreeted(link, msg.name, !!msg.muted, !!msg.sharing, msg.hasCamera)
         break
       }
       case 'state': {
         link.info.muted = !!msg.muted
         link.info.connectionState = 'connected'
         this.applyRemoteSharing(link, !!msg.sharing)
+        if (typeof msg.hasCamera === 'boolean') {
+          this.applyRemoteCamera(link, msg.hasCamera)
+        }
         break
       }
       case 'screen:request-stream': {
@@ -2087,6 +2274,26 @@ export class RoomManager {
           if (requesterLink) {
             console.info(`[WebRTC] Retransmitindo stream de tela sob demanda para ${msg.fromPeerId}`)
             this.callPeer(requesterLink, 'screen')
+          }
+        }
+        return
+      }
+      case 'camera:stop': {
+        const targetId = msg.peerId || id
+        const targetLink = this.links.get(targetId)
+        if (targetLink) {
+          this.applyRemoteCamera(targetLink, false)
+        } else {
+          delete this.cameraStreams[targetId]
+        }
+        this.emit()
+        return
+      }
+      case 'camera:request-stream': {
+        if (msg.toPeerId === this.local.peerId && this.cameraStream) {
+          const requesterLink = this.links.get(msg.fromPeerId)
+          if (requesterLink) {
+            this.callPeer(requesterLink, 'camera')
           }
         }
         return
@@ -2264,6 +2471,23 @@ export class RoomManager {
     }
   }
 
+  private applyRemoteCamera(link: PeerLink, hasCamera: boolean): void {
+    link.info.hasCamera = hasCamera
+    if (!hasCamera) {
+      link.info.cameraStream = null
+      delete this.cameraStreams[link.id]
+      if (link.cameraIn) {
+        const call = link.cameraIn
+        link.cameraIn = null
+        try {
+          call.close()
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
   private removeLink(id: string, notify: boolean): void {
     const link = this.links.get(id)
     if (!link) return
@@ -2329,6 +2553,7 @@ export class RoomManager {
     this.links.delete(id)
     delete this.voiceStreams[id]
     delete this.screenStreams[id]
+    delete this.cameraStreams[id]
     if (link.teardownTimer !== null) window.clearTimeout(link.teardownTimer)
     if (link.helloTimer !== null) window.clearInterval(link.helloTimer)
     if (link.retryTimer !== null) window.clearTimeout(link.retryTimer)
@@ -2343,18 +2568,20 @@ export class RoomManager {
       }
       link.gamepadChannel = null
     }
-    for (const call of [link.micOut, link.screenOut, link.micIn, link.screenIn]) {
+    for (const call of [link.micOut, link.screenOut, link.cameraOut, link.micIn, link.screenIn, link.cameraIn]) {
       try {
         call?.close()
       } catch {
         /* ignore */
       }
     }
-    link.micOut = link.screenOut = link.micIn = link.screenIn = null
+    link.micOut = link.screenOut = link.cameraOut = link.micIn = link.screenIn = link.cameraIn = null
     link.info.micStream?.getTracks().forEach((t) => t.stop())
     link.info.screenStream?.getTracks().forEach((t) => t.stop())
+    link.info.cameraStream?.getTracks().forEach((t) => t.stop())
     link.info.micStream = null
     link.info.screenStream = null
+    link.info.cameraStream = null
     if (link.data) {
       const data = link.data
       link.data = null
@@ -2421,6 +2648,30 @@ export class RoomManager {
     this.emit()
   }
 
+  private attachRemoteCameraStream(link: PeerLink, _call: MediaConnection, stream: MediaStream): void {
+    link.info.cameraStream = stream
+    this.cameraStreams[link.id] = stream
+    link.info.hasCamera = true
+    link.info.connectionState = 'connected'
+    link.visible = true
+
+    const onTrackChange = () => {
+      if (this.destroyed || this.cameraStreams[link.id]?.id !== stream.id) return
+      const live = stream.getVideoTracks().some((t) => t.readyState === 'live')
+      if (!live) {
+        this.applyRemoteCamera(link, false)
+      }
+      this.emit()
+    }
+    stream.addEventListener('addtrack', onTrackChange)
+    for (const track of stream.getVideoTracks()) {
+      track.addEventListener('unmute', onTrackChange)
+      track.addEventListener('ended', onTrackChange)
+    }
+
+    this.emit()
+  }
+
   private hasLiveAudioTrack(stream: MediaStream | null | undefined): boolean {
     if (!stream) return false
     return stream.getAudioTracks().some((t) => t.readyState === 'live')
@@ -2432,14 +2683,15 @@ export class RoomManager {
     if (kind === 'mic' && !this.micStream) {
       this.useSilentMicrophone()
     }
-    const stream = kind === 'mic' ? this.micStream : this.screenStream
+    const stream =
+      kind === 'mic' ? this.micStream : kind === 'screen' ? this.screenStream : this.cameraStream
     if (!stream) return
 
-    const callSuffix = kind === 'screen' ? 'screen' : 'voice'
+    const callSuffix = kind === 'screen' ? 'screen' : kind === 'camera' ? 'camera' : 'voice'
     const callId = `${this.local.peerId}-${callSuffix}`
     const call = peer.call(link.id, stream, {
       metadata: {
-        type: kind === 'screen' ? 'screen' : 'voice',
+        type: callSuffix,
         kind,
         streamId: stream.id,
         callId,
@@ -2458,7 +2710,7 @@ export class RoomManager {
         }
       }
       link.micOut = call
-    } else {
+    } else if (kind === 'screen') {
       if (link.screenOut && link.screenOut !== call) {
         try {
           link.screenOut.close()
@@ -2467,13 +2719,24 @@ export class RoomManager {
         }
       }
       link.screenOut = call
+    } else {
+      if (link.cameraOut && link.cameraOut !== call) {
+        try {
+          link.cameraOut.close()
+        } catch {
+          /* ignore */
+        }
+      }
+      link.cameraOut = call
     }
 
-    // Se o par responder call.answer(stream), separamos estritamente voz vs tela
+    // Se o par responder call.answer(stream), separamos estritamente voz vs tela vs câmera
     call.on('stream', (remoteStream) => {
       const l = this.links.get(link.id)
       if (!l || this.destroyed) return
-      if (kind === 'screen' || remoteStream.getVideoTracks().length > 0) {
+      if (kind === 'camera') {
+        this.attachRemoteCameraStream(l, call, remoteStream)
+      } else if (kind === 'screen' || remoteStream.getVideoTracks().length > 0) {
         this.attachRemoteScreenStream(l, call, remoteStream)
       } else if (remoteStream.getAudioTracks().length > 0) {
         this.attachRemoteMicStream(l, call, remoteStream)
@@ -2491,9 +2754,10 @@ export class RoomManager {
           delete this.voiceStreams[link.id]
           this.emit()
         }
-      }
-      if (kind === 'screen' && l.screenOut === call) {
+      } else if (kind === 'screen' && l.screenOut === call) {
         l.screenOut = null
+      } else if (kind === 'camera' && l.cameraOut === call) {
+        l.cameraOut = null
       }
     })
     call.on('error', (err) => {
@@ -2518,16 +2782,22 @@ export class RoomManager {
       name?: unknown
     }
     const callIdStr = typeof meta.callId === 'string' ? meta.callId : ''
+    const isCameraMeta =
+      meta.type === 'camera' ||
+      meta.kind === 'camera' ||
+      meta.streamType === 'camera' ||
+      callIdStr.endsWith('-camera')
     const isScreenMeta =
-      meta.type === 'screen' ||
-      meta.kind === 'screen' ||
-      meta.streamType === 'screen' ||
-      callIdStr.endsWith('-screen')
-    const kind: MediaKind = isScreenMeta ? 'screen' : 'mic'
+      !isCameraMeta &&
+      (meta.type === 'screen' ||
+        meta.kind === 'screen' ||
+        meta.streamType === 'screen' ||
+        callIdStr.endsWith('-screen'))
+    const kind: MediaKind = isCameraMeta ? 'camera' : isScreenMeta ? 'screen' : 'mic'
     const link = this.ensureLink(id, meta.name, true)
     this.emit()
 
-    // Chamadas de voz são atendidas com o microfone local; chamadas de tela nunca tocam no canal de voz
+    // Chamadas de voz são atendidas com o microfone local; chamadas de tela/câmera nunca tocam no canal de voz
     if (kind === 'mic') {
       if (!this.micStream) this.useSilentMicrophone()
       call.answer(this.micStream ?? undefined)
@@ -2539,6 +2809,16 @@ export class RoomManager {
         }
       }
       link.micIn = call
+    } else if (kind === 'camera') {
+      call.answer()
+      if (link.cameraIn && link.cameraIn !== call) {
+        try {
+          link.cameraIn.close()
+        } catch {
+          /* ignore */
+        }
+      }
+      link.cameraIn = call
     } else {
       call.answer(undefined)
       if (link.screenIn && link.screenIn !== call) {
@@ -2559,8 +2839,10 @@ export class RoomManager {
     call.on('stream', (stream) => {
       const l = this.links.get(id)
       if (!l || this.destroyed) return
-      const isScreenStream = kind === 'screen' || stream.getVideoTracks().length > 0
-      if (isScreenStream) {
+      if (kind === 'camera') {
+        l.cameraIn = call
+        this.attachRemoteCameraStream(l, call, stream)
+      } else if (kind === 'screen' || stream.getVideoTracks().length > 0) {
         l.screenIn = call
         this.attachRemoteScreenStream(l, call, stream)
       } else {
@@ -2571,7 +2853,12 @@ export class RoomManager {
     call.on('close', () => {
       const l = this.links.get(id)
       if (!l) return
-      if (kind === 'screen' && l.screenIn === call) {
+      if (kind === 'camera' && l.cameraIn === call) {
+        l.cameraIn = null
+        l.info.cameraStream = null
+        l.info.hasCamera = false
+        delete this.cameraStreams[id]
+      } else if (kind === 'screen' && l.screenIn === call) {
         l.screenIn = null
         l.info.screenStream = null
         delete this.screenStreams[id]
@@ -2954,7 +3241,12 @@ export class RoomManager {
   }
 
   private broadcastState(): void {
-    const msg: PeerMessage = { type: 'state', muted: this.local.muted, sharing: !!this.screenStream }
+    const msg: PeerMessage = {
+      type: 'state',
+      muted: this.local.muted,
+      sharing: !!this.screenStream,
+      hasCamera: !!this.cameraStream,
+    }
     for (const link of this.links.values()) {
       if (link.data) this.send(link.data, msg)
     }
@@ -2974,10 +3266,17 @@ export class RoomManager {
     this.cb.onChange({
       status: this.status,
       room: this.room,
-      local: { ...this.local, screenStream: this.screenStream },
+      local: {
+        ...this.local,
+        screenStream: this.screenStream,
+        cameraStream: this.cameraStream,
+        cameraEnabled: !!this.cameraStream,
+      },
       participants,
       voiceStreams: { ...this.voiceStreams },
       screenStreams: { ...this.screenStreams },
+      localCameraStream: this.cameraStream,
+      cameraStreams: { ...this.cameraStreams },
     })
   }
 }

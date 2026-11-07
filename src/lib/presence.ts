@@ -46,6 +46,7 @@ export interface PresenceMember {
   id: string
   name: string
   joinedAt?: number
+  hasCamera?: boolean
 }
 
 export interface PresenceRoomMember {
@@ -53,6 +54,7 @@ export interface PresenceRoomMember {
   name: string
   joinedAt: number
   lastSeen: number
+  hasCamera?: boolean
 }
 
 export interface PresenceProvider {
@@ -76,6 +78,7 @@ interface RawMember {
   name?: unknown
   last_seen?: unknown
   joined_at?: unknown
+  has_camera?: unknown
 }
 
 interface RawRoom {
@@ -178,6 +181,7 @@ export function normalizeRoomMembers(
       name: str(m.name, 32) || 'Anônimo',
       joinedAt,
       lastSeen: lastSeen || now,
+      hasCamera: Boolean(m.has_camera),
     })
   }
   list.sort((a, b) => a.joinedAt - b.joinedAt || a.id.localeCompare(b.id))
@@ -307,6 +311,7 @@ class FirebasePresence implements PresenceProvider {
           name: cleanName,
           last_seen: serverTimestamp(),
           joined_at: joinedAt,
+          has_camera: Boolean(member.hasCamera),
         },
       }
       if (typeof count === 'number' && count > 0) payload.count = count
@@ -325,6 +330,7 @@ class FirebasePresence implements PresenceProvider {
         name: cleanName,
         last_seen: { '.sv': 'timestamp' },
         joined_at: joinedAt,
+        has_camera: Boolean(member.hasCamera),
       },
     }
     const name = str(roomName)
@@ -436,6 +442,7 @@ class LocalPresence implements PresenceProvider {
         name: str(member.name, 32),
         last_seen: now,
         joined_at: member.joinedAt ?? now,
+        has_camera: Boolean(member.hasCamera),
       },
     }
     const activeCount = normalizeRoomMembers(nextMembers, now).length

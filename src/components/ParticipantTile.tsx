@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Eye, MicOff, MonitorUp, Swords, Volume2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Eye, MicOff, MonitorUp, Swords, Video, Volume2 } from 'lucide-react'
 import { Avatar } from './Avatar'
 import { VolumeSlider } from './VolumeSlider'
 import type { PeerConnectionState } from '../types'
@@ -10,21 +10,25 @@ interface ParticipantTileProps {
   speaking: boolean
   muted: boolean
   sharing: boolean
+  cameraStream?: MediaStream | null
   isLocal?: boolean
   micAvailable?: boolean
   connectionState?: PeerConnectionState
   compact?: boolean
+  spotlight?: boolean
   voiceVolume?: number
   onVoiceVolumeChange?: (value: number) => void
   onWatchScreen?: () => void
   isWatchingScreen?: boolean
   onChallengeRps?: (peerId: string) => void
+  onDoubleClick?: () => void
 }
 
 /**
  * Cartão de participante no palco ou na faixa horizontal inferior.
- * Borda verde pulsante quando há fala detectada, etiqueta "🔴 AO VIVO / Transmitindo",
- * botão "Assistir Transmissão" (opt-in) e controle de volume integrado.
+ * Suporta vídeo de webcam integrado, borda verde pulsante quando há fala detectada,
+ * etiqueta "🔴 AO VIVO / Transmitindo", botão "Assistir Transmissão" (opt-in),
+ * duplo clique para expandir (Spotlight) e controle de volume integrado.
  */
 export function ParticipantTile({
   peerId,
@@ -32,25 +36,102 @@ export function ParticipantTile({
   speaking,
   muted,
   sharing,
+  cameraStream = null,
   isLocal = false,
   micAvailable = true,
   connectionState = 'connected',
   compact = false,
+  spotlight = false,
   voiceVolume = 1,
   onVoiceVolumeChange,
   onWatchScreen,
   isWatchingScreen = false,
   onChallengeRps,
+  onDoubleClick,
 }: ParticipantTileProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [showVolume, setShowVolume] = useState(false)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   const canChallenge = !isLocal && !!peerId && !!onChallengeRps
   const canWatch = sharing && !!onWatchScreen
+  const hasCamera = Boolean(cameraStream)
+
+  useEffect(() => {
+    const videoEl = videoRef.current
+    if (!videoEl || !cameraStream) return
+    if (videoEl.srcObject !== cameraStream) {
+      videoEl.srcObject = cameraStream
+    }
+    videoEl.play().catch((err) => {
+      console.warn('[Webcam] Erro ao dar play no vídeo do participante:', err)
+    })
+  }, [cameraStream, compact, spotlight])
 
   if (compact) {
+    if (hasCamera) {
+      return (
+        <div
+          onDoubleClick={onDoubleClick}
+          title="Clique duas vezes para expandir"
+          className={`group relative flex h-24 w-44 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-xl bg-dc-darker ring-2 transition-all ${
+            speaking
+              ? 'ring-dc-green shadow-[0_0_18px_rgba(35,165,90,0.45)]'
+              : 'ring-white/[0.08] hover:ring-white/20'
+          }`}
+        >
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className={`h-full w-full object-cover rounded-xl ${isLocal ? 'scale-x-[-1]' : ''}`}
+          />
+
+          <div className="absolute bottom-1.5 left-1.5 flex max-w-[calc(100%-0.75rem)] items-center gap-1.5 rounded-md bg-black/60 px-2 py-0.5 backdrop-blur-sm">
+            {muted && <MicOff size={11} className="shrink-0 text-dc-red" />}
+            <span className="truncate text-[11px] font-semibold text-white">
+              {name}
+              {isLocal && <span className="text-white/60"> (você)</span>}
+            </span>
+          </div>
+
+          <div className="absolute right-1.5 top-1.5 flex items-center gap-1">
+            {canWatch && !isWatchingScreen && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onWatchScreen()
+                }}
+                className="inline-flex items-center gap-1 rounded-md bg-dc-red px-1.5 py-0.5 text-[10px] font-bold text-white shadow transition hover:bg-dc-red/90"
+                title={`Assistir transmissão de ${name}`}
+              >
+                <Eye size={11} />
+              </button>
+            )}
+            {canChallenge && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onChallengeRps(peerId)
+                }}
+                className="rounded-md bg-black/60 p-1 text-dc-brand-soft backdrop-blur-sm transition hover:bg-dc-brand hover:text-white"
+                title={`Desafiar ${name} para Pedra, Papel e Tesoura`}
+              >
+                <Swords size={11} />
+              </button>
+            )}
+          </div>
+        </div>
+      )
+    }
+
     return (
       <div
-        className={`flex shrink-0 items-center gap-2.5 rounded-xl bg-dc-darker px-3 py-2 ring-2 transition-all ${
+        onDoubleClick={onDoubleClick}
+        title="Clique duas vezes para expandir"
+        className={`flex shrink-0 cursor-pointer items-center gap-2.5 rounded-xl bg-dc-darker px-3 py-2 ring-2 transition-all ${
           speaking
             ? 'ring-dc-green shadow-[0_0_18px_rgba(35,165,90,0.35)]'
             : 'ring-white/[0.06] hover:ring-white/15'
@@ -133,6 +214,7 @@ export function ParticipantTile({
 
   return (
     <div
+      onDoubleClick={onDoubleClick}
       onClick={() => {
         if (canWatch || canChallenge) setMenuOpen((o) => !o)
       }}
@@ -141,15 +223,30 @@ export function ParticipantTile({
         e.preventDefault()
         setMenuOpen(true)
       }}
-      className={`group relative flex aspect-video min-h-36 w-full animate-fade-up items-center justify-center overflow-hidden rounded-xl bg-dc-darker ring-2 transition-all duration-200 ${
-        speaking ? 'ring-dc-green shadow-[0_0_24px_rgba(35,165,90,0.25)]' : 'ring-white/[0.03]'
-      } ${canChallenge || canWatch ? 'cursor-pointer' : ''}`}
+      title="Clique duas vezes para expandir / tela cheia"
+      className={`group relative flex ${
+        spotlight ? 'h-full w-full' : 'aspect-video min-h-36 w-full'
+      } animate-fade-up cursor-pointer select-none items-center justify-center overflow-hidden rounded-xl bg-dc-darker ring-2 transition-all duration-200 ${
+        speaking ? 'ring-dc-green shadow-[0_0_24px_rgba(35,165,90,0.35)]' : 'ring-white/[0.03]'
+      }`}
     >
-      <div
-        className="pointer-events-none absolute inset-0 opacity-30 transition-opacity group-hover:opacity-50"
-        style={{ background: 'radial-gradient(circle at 50% 40%, rgba(88,101,242,0.25), transparent 65%)' }}
-      />
-      <Avatar name={name} size={84} speaking={speaking} />
+      {hasCamera ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className={`h-full w-full object-cover rounded-xl ${isLocal ? 'scale-x-[-1]' : ''}`}
+        />
+      ) : (
+        <>
+          <div
+            className="pointer-events-none absolute inset-0 opacity-30 transition-opacity group-hover:opacity-50"
+            style={{ background: 'radial-gradient(circle at 50% 40%, rgba(88,101,242,0.25), transparent 65%)' }}
+          />
+          <Avatar name={name} size={spotlight ? 112 : 84} speaking={speaking} />
+        </>
+      )}
 
       {/* Botão rápido no hover ou menu ao clicar sobre o participante */}
       {canChallenge && (
@@ -160,7 +257,7 @@ export function ParticipantTile({
             setMenuOpen(false)
             onChallengeRps(peerId)
           }}
-          className={`absolute left-2.5 top-2.5 inline-flex items-center gap-1.5 rounded-lg border border-dc-brand/40 bg-dc-darkest/90 px-2.5 py-1.5 text-xs font-semibold text-white shadow-lg backdrop-blur transition ${
+          className={`absolute left-2.5 top-2.5 z-10 inline-flex items-center gap-1.5 rounded-lg border border-dc-brand/40 bg-dc-darkest/90 px-2.5 py-1.5 text-xs font-semibold text-white shadow-lg backdrop-blur transition ${
             menuOpen ? 'opacity-100 scale-100' : 'opacity-0 group-hover:opacity-100 hover:bg-dc-brand'
           }`}
           title="Desafiar para Pedra, Papel e Tesoura (Melhor de 3)"
@@ -173,7 +270,7 @@ export function ParticipantTile({
       {/* Overlay/Botão Opt-in "Assistir Transmissão" ao passar o mouse ou clicar no cartão de quem transmite */}
       {canWatch && (
         <div
-          className={`absolute inset-0 flex items-center justify-center bg-black/55 backdrop-blur-[2px] transition-opacity duration-200 ${
+          className={`absolute inset-0 z-10 flex items-center justify-center bg-black/55 backdrop-blur-[2px] transition-opacity duration-200 ${
             menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
           }`}
         >
@@ -192,8 +289,9 @@ export function ParticipantTile({
         </div>
       )}
 
-      <div className="absolute bottom-2.5 left-2.5 flex max-w-[calc(100%-1.25rem)] items-center gap-2 rounded-md bg-black/55 px-2.5 py-1 backdrop-blur">
+      <div className="absolute bottom-2.5 left-2.5 z-10 flex max-w-[calc(100%-1.25rem)] items-center gap-2 rounded-md bg-black/60 px-2.5 py-1 backdrop-blur-sm">
         {muted && <MicOff size={14} className="shrink-0 text-dc-red" aria-label="Microfone desativado" />}
+        {hasCamera && <Video size={13} className="shrink-0 text-emerald-400" aria-label="Câmera ativa" />}
         <div className="min-w-0 leading-tight">
           <span className="block truncate text-sm font-medium text-white">
             {name}
@@ -233,7 +331,7 @@ export function ParticipantTile({
       </div>
 
       {sharing && (
-        <span className="absolute right-2.5 top-2.5 flex items-center gap-1.5 rounded-md bg-dc-red px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white shadow-md">
+        <span className="absolute right-2.5 top-2.5 z-10 flex items-center gap-1.5 rounded-md bg-dc-red px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white shadow-md">
           <MonitorUp size={12} /> 🔴 AO VIVO · Transmitindo
         </span>
       )}

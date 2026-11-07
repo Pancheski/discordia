@@ -2,7 +2,7 @@ export type RoomStatus = 'idle' | 'connecting' | 'connected' | 'error'
 
 export type PeerConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'error'
 
-export type MediaKind = 'mic' | 'screen'
+export type MediaKind = 'mic' | 'screen' | 'camera'
 
 export interface PeerStats {
   rttMs: number | null
@@ -15,9 +15,11 @@ export interface RemoteParticipant {
   name: string
   muted: boolean
   sharing: boolean
+  hasCamera?: boolean
   speaking: boolean
   micStream: MediaStream | null
   screenStream: MediaStream | null
+  cameraStream: MediaStream | null
   /** 0..1 — volume local aplicado à voz deste participante */
   voiceVolume: number
   /** 0..1 — volume local aplicado ao áudio da tela deste participante */
@@ -38,6 +40,8 @@ export interface LocalState {
   deafened: boolean
   micAvailable: boolean
   speaking: boolean
+  cameraEnabled: boolean
+  cameraStream: MediaStream | null
   screenStream: MediaStream | null
   screenHasAudio: boolean
   screenPreset: ScreenSharePreset
@@ -52,6 +56,10 @@ export interface RoomSnapshot {
   voiceStreams: Record<string, MediaStream>
   /** Mapa explícito e isolado apenas com as faixas de vídeo/áudio de tela por peerId */
   screenStreams: Record<string, MediaStream>
+  /** Stream local da webcam */
+  localCameraStream: MediaStream | null
+  /** Mapa explícito e isolado apenas com as faixas de vídeo de webcam por peerId */
+  cameraStreams: Record<string, MediaStream>
 }
 
 export type ToastKind = 'info' | 'success' | 'warning' | 'error'
@@ -71,10 +79,12 @@ export interface FileMeta {
 
 /** Mensagens trocadas pelo DataChannel de controle */
 export type PeerMessage =
-  | { type: 'hello'; name: string; muted: boolean; sharing: boolean }
-  | { type: 'hello-ack'; name: string; muted: boolean; sharing: boolean }
-  | { type: 'state'; muted: boolean; sharing: boolean }
+  | { type: 'hello'; name: string; muted: boolean; sharing: boolean; hasCamera?: boolean }
+  | { type: 'hello-ack'; name: string; muted: boolean; sharing: boolean; hasCamera?: boolean }
+  | { type: 'state'; muted: boolean; sharing: boolean; hasCamera?: boolean }
   | { type: 'screen:request-stream'; fromPeerId: string; toPeerId: string }
+  | { type: 'camera:stop'; peerId: string }
+  | { type: 'camera:request-stream'; fromPeerId: string; toPeerId: string }
   | { type: 'bye' }
   | { type: 'chat'; id: string; text: string; ts: number }
   | { type: 'file-offer'; id: string; ts: number; file: FileMeta }

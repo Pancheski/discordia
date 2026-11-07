@@ -12,6 +12,8 @@ import {
   Rocket,
   Settings,
   Signal,
+  Video,
+  VideoOff,
   VolumeX,
   Zap,
 } from 'lucide-react'
@@ -23,6 +25,7 @@ interface ControlBarProps {
   muted: boolean
   deafened: boolean
   micAvailable: boolean
+  cameraEnabled: boolean
   sharing: boolean
   screenSupported: boolean
   screenPreset?: ScreenSharePreset
@@ -35,6 +38,7 @@ interface ControlBarProps {
   meshState?: PeerConnectionState
   onToggleMute: () => void
   onToggleDeafen: () => void
+  onToggleCamera: () => void
   onToggleScreen: () => void
   onStartScreenShare?: (preset: ScreenSharePreset) => void
   onTogglePreset?: () => void
@@ -51,6 +55,7 @@ export function ControlBar({
   muted,
   deafened,
   micAvailable,
+  cameraEnabled,
   sharing,
   screenSupported,
   screenPreset = 'quality',
@@ -63,6 +68,7 @@ export function ControlBar({
   meshState = 'connected',
   onToggleMute,
   onToggleDeafen,
+  onToggleCamera,
   onToggleScreen,
   onStartScreenShare,
   onTogglePreset,
@@ -133,6 +139,15 @@ export function ControlBar({
           variant={deafened ? 'danger' : 'neutral'}
         >
           {deafened ? <VolumeX size={21} /> : <Headphones size={21} />}
+        </ControlButton>
+
+        <ControlButton
+          id="camera-toggle-button"
+          label={cameraEnabled ? 'Desligar Câmera' : 'Ligar Câmera'}
+          onClick={onToggleCamera}
+          variant={cameraEnabled ? 'active' : 'neutral'}
+        >
+          {cameraEnabled ? <Video size={21} /> : <VideoOff size={21} />}
         </ControlButton>
 
         <div className="relative inline-flex items-center">
