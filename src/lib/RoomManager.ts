@@ -556,6 +556,7 @@ export class RoomManager {
 
     let stream: MediaStream
     try {
+      // 1ª tentativa: Resolução ideal de 720p sem travas obrigatórias
       stream = await md.getUserMedia({
         video: {
           width: { ideal: 1280 },
@@ -564,18 +565,20 @@ export class RoomManager {
         },
         audio: false,
       })
-    } catch (err) {
-      const name = err instanceof DOMException ? err.name : ''
-      if (name === 'NotAllowedError' || name === 'SecurityError') {
-        this.toast('warning', 'Permissão de câmera negada pelo navegador ou sistema.')
-      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-        this.toast('warning', 'Nenhuma webcam detectada neste dispositivo.')
-      } else if (name === 'NotReadableError' || name === 'TrackStartError') {
-        this.toast('error', 'A webcam já está em uso por outro aplicativo.')
+    } catch (firstErr: unknown) {
+      const errName = firstErr instanceof DOMException ? firstErr.name : ''
+      // 2ª tentativa: Fallback básico irrestrito caso o dispositivo não suporte 720p ou constraints específicas
+      if (errName === 'OverconstrainedError' || errName === 'ConstraintNotSatisfiedError') {
+        try {
+          stream = await md.getUserMedia({ video: true, audio: false })
+        } catch (fallbackErr: unknown) {
+          this.handleCameraError(fallbackErr)
+          return
+        }
       } else {
-        this.toast('error', `Falha ao ligar a câmera: ${describeError(err)}`)
+        this.handleCameraError(firstErr)
+        return
       }
-      return
     }
 
     if (this.destroyed) {
@@ -603,6 +606,22 @@ export class RoomManager {
     this.broadcastState()
     this.toast('success', '📹 Câmera ativada.')
     this.emit()
+  }
+
+  private handleCameraError(err: unknown): void {
+    const name = err instanceof DOMException ? err.name : (err as { name?: string })?.name || ''
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+      this.toast(
+        'warning',
+        "Permissão de câmera negada. No navegador, clique no ícone de cadeado/configurações ao lado do link e mude a Câmera para 'Permitir'. No Windows, verifique se 'Permitir que os aplicativos acessem a câmera' está ativado nas Configurações do sistema.",
+      )
+    } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      this.toast('warning', 'Nenhuma webcam física foi detectada no computador.')
+    } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+      this.toast('error', 'A webcam já está em uso por outro aplicativo.')
+    } else {
+      this.toast('error', `Falha ao ligar a câmera: ${describeError(err)}`)
+    }
   }
 
   stopCamera(silent = false): void {

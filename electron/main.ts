@@ -307,23 +307,6 @@ function createMainWindow(): void {
       .catch(() => callback({}))
   })
 
-  const allowedPermissions = new Set([
-    'media',
-    'videoCapture',
-    'audioCapture',
-    'display-capture',
-    'fullscreen',
-    'notifications',
-  ])
-
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(allowedPermissions.has(permission))
-  })
-
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    return allowedPermissions.has(permission)
-  })
-
   const devServerUrl = process.env.VITE_DEV_SERVER_URL
   if (devServerUrl) {
     void mainWindow.loadURL(devServerUrl)
@@ -471,8 +454,40 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-background-timer-throttling')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 app.commandLine.appendSwitch('webrtc-max-cpu-consumption-percentage', '100')
+app.commandLine.appendSwitch('enable-features', 'WebRtcHideLocalIpsWithMdns,MediaSession')
 
 app.whenReady().then(() => {
+  // Tratamento completo de permissões de mídia (microfone, câmera, captura de tela)
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    const perm = permission as string
+    if (
+      perm === 'media' ||
+      perm === 'videoCapture' ||
+      perm === 'audioCapture' ||
+      perm === 'display-capture' ||
+      perm === 'fullscreen' ||
+      perm === 'notifications'
+    ) {
+      return callback(true)
+    }
+    callback(false)
+  })
+
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+    const perm = permission as string
+    if (
+      perm === 'media' ||
+      perm === 'videoCapture' ||
+      perm === 'audioCapture' ||
+      perm === 'display-capture' ||
+      perm === 'fullscreen' ||
+      perm === 'notifications'
+    ) {
+      return true
+    }
+    return false
+  })
+
   gamepadHost.start()
   createMainWindow()
   initAutoUpdater()
