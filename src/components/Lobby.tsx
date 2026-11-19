@@ -8,9 +8,12 @@ import {
   Dices,
   DoorOpen,
   Download,
+  Eye,
+  EyeOff,
   Headphones,
   Link2,
   LoaderCircle,
+  Lock,
   Plus,
   Sparkles,
 } from 'lucide-react'
@@ -33,7 +36,7 @@ type LobbyMode = 'create' | 'browse'
 
 interface LobbyProps {
   joining: boolean
-  onJoin: (name: string, room: string, displayName?: string) => void
+  onJoin: (name: string, room: string, displayName?: string, password?: string) => void
   onToast: (kind: ToastKind, message: string) => void
 }
 
@@ -44,6 +47,8 @@ export function Lobby({ joining, onJoin, onToast }: LobbyProps) {
   const [isInvited] = useState(() => hasRoomInUrl())
   const [mode, setMode] = useState<LobbyMode>('create')
   const [copied, setCopied] = useState(false)
+  const [roomPassword, setRoomPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const caps = useMemo(() => detectCapabilities(), [])
   const activeRooms = useActiveRooms(true)
   const slug = slugifyRoom(roomName)
@@ -84,7 +89,7 @@ export function Lobby({ joining, onJoin, onToast }: LobbyProps) {
     if (!canJoin) return
     const cleanNick = nickname.trim()
     localStorage.setItem(NICK_KEY, cleanNick)
-    onJoin(cleanNick, slug, roomName.trim() || slug)
+    onJoin(cleanNick, slug, roomName.trim() || slug, roomPassword.trim() || undefined)
   }
 
   const handleSelectActiveRoom = (targetSlug: string, displayName: string) => {
@@ -235,6 +240,42 @@ export function Lobby({ joining, onJoin, onToast }: LobbyProps) {
                 {slug && slug !== roomName && (
                   <p className="mt-1.5 text-xs text-dc-muted">
                     ID da sala: <span className="font-mono text-dc-text">{slug}</span>
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label htmlFor="room-password-create" className="dc-label">
+                  Senha da Sala <span className="font-normal normal-case text-dc-faint">(opcional)</span>
+                </label>
+                <div className="relative">
+                  <Lock
+                    size={15}
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-dc-faint"
+                  />
+                  <input
+                    id="room-password-create"
+                    type={showPassword ? 'text' : 'password'}
+                    className="dc-input pl-9 pr-10"
+                    placeholder="Deixe em branco para uma sala aberta"
+                    value={roomPassword}
+                    maxLength={128}
+                    autoComplete="new-password"
+                    onChange={(e) => setRoomPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-dc-muted transition hover:text-dc-text"
+                    aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                    title={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+                {roomPassword.trim() && (
+                  <p className="mt-1.5 text-xs text-dc-muted">
+                    🔒 Sala privada: quem receber o link precisará da senha. Ela não é salva em texto puro.
                   </p>
                 )}
               </div>

@@ -74,6 +74,21 @@ export function LobbyRooms({ state, joining, canEnter, onSelectRoom, onSwitchToC
                   <div className="flex items-center gap-1.5">
                     <Hash size={15} className="shrink-0 text-dc-brand-soft" />
                     <span className="truncate font-semibold text-dc-header">{room.name}</span>
+                    {room.hasPassword ? (
+                      <span
+                        className="shrink-0 rounded bg-dc-yellow/15 px-1.5 py-0.5 text-[10px] font-bold text-dc-yellow"
+                        title="Sala protegida por senha"
+                      >
+                        🔒 Privada
+                      </span>
+                    ) : (
+                      <span
+                        className="shrink-0 rounded bg-dc-green/15 px-1.5 py-0.5 text-[10px] font-bold text-dc-green"
+                        title="Qualquer pessoa pode entrar"
+                      >
+                        🌐 Aberta
+                      </span>
+                    )}
                   </div>
                   <div className="mt-1 flex items-center gap-2 text-xs text-dc-muted">
                     <span className="inline-flex items-center gap-1.5 font-medium text-dc-green">

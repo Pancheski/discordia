@@ -40,6 +40,16 @@ export interface ActiveRoom {
   name: string
   online: number
   lastSeen: number
+  hasPassword: boolean
+}
+
+/** Metadados de segurança da sala (`hasPassword` / `passwordHash`, nunca a senha em texto puro). */
+export interface RoomSecurityMeta {
+  /** A sala tem membros online ou pulso recente (não é um registro abandonado). */
+  active: boolean
+  online: number
+  hasPassword: boolean
+  passwordHash: string | null
 }
 
 export interface PresenceMember {
@@ -70,6 +80,10 @@ export interface PresenceProvider {
   prune(roomIds: string[]): void
   /** Notificação push de mudanças nas salas. */
   subscribe?(listener: () => void): () => void
+  /** Lê `hasPassword` / `passwordHash` da sala. */
+  getRoomSecurity(roomId: string): Promise<RoomSecurityMeta>
+  /** Grava (ou limpa, com `null`) o hash da senha da sala. */
+  setRoomPassword(roomId: string, roomName: string | undefined, passwordHash: string | null): Promise<void>
 }
 
 // ─── Modelo bruto + normalização ───────────────────────────────────────
@@ -85,6 +99,8 @@ interface RawRoom {
   name?: unknown
   count?: unknown
   last_seen?: unknown
+  hasPassword?: unknown
+  passwordHash?: unknown
   members?: Record<string, RawMember | null> | null
 }
 
@@ -92,6 +108,7 @@ type RawTree = Record<string, RawRoom | null> | null
 
 const ROOM_ID_RE = /^[a-z0-9-]{1,48}$/
 const KEY_RE = /^[A-Za-z0-9_-]{1,96}$/
+const HASH_RE = /^[a-f0-9]{64}$/
 
 function num(value: unknown): number {
   const n = Number(value)
@@ -100,6 +117,24 @@ function num(value: unknown): number {
 
 function str(value: unknown, max = 48): string {
   return typeof value === 'string' ? value.replace(/\p{Cc}/gu, '').trim().slice(0, max) : ''
+}
+
+function readPasswordHash(room: RawRoom | null | undefined): string | null {
+  if (!room || room.hasPassword !== true) return null
+  return typeof room.passwordHash === 'string' && HASH_RE.test(room.passwordHash) ? room.passwordHash : null
+}
+
+export function roomSecurityFromRaw(room: RawRoom | null | undefined, now = Date.now()): RoomSecurityMeta {
+  const online = room ? normalizeRoomMembers(room.members, now).length : 0
+  const lastSeen = room ? num(room.last_seen) : 0
+  const passwordHash = readPasswordHash(room)
+  return {
+    active: online > 0 || (lastSeen > 0 && now - lastSeen <= PRESENCE_STALE_MS),
+    online,
+    // Sala marcada como protegida mas com hash inválido continua bloqueada (falha segura)
+    hasPassword: Boolean(room && room.hasPassword === true),
+    passwordHash,
+  }
 }
 
 export interface NormalizedTree {
@@ -126,7 +161,7 @@ export function normalizeTree(tree: RawTree, now = Date.now()): NormalizedTree {
       if (now - lastSeen > PRESENCE_STALE_MS) stale.push(id)
       continue
     }
-    active.push({ id, name: str(room.name) || id, online, lastSeen })
+    active.push({ id, name: str(room.name) || id, online, lastSeen, hasPassword: room.hasPassword === true })
   }
 
   active.sort((a, b) => b.online - a.online || b.lastSeen - a.lastSeen)
@@ -374,6 +409,40 @@ class FirebasePresence implements PresenceProvider {
     const unsubscribe = onValue(rootRef, () => listener())
     return () => unsubscribe()
   }
+
+  async getRoomSecurity(roomId: string): Promise<RoomSecurityMeta> {
+    if (!ROOM_ID_RE.test(roomId)) return roomSecurityFromRaw(null)
+    // Erros de rede propagam: sem conseguir ler a sala, não liberamos a entrada
+    const res = await fetch(this.url(roomId), { cache: 'no-store' })
+    if (!res.ok) throw new Error(`Firebase respondeu ${res.status}`)
+    return roomSecurityFromRaw((await res.json()) as RawRoom | null)
+  }
+
+  async setRoomPassword(roomId: string, roomName: string | undefined, passwordHash: string | null): Promise<void> {
+    if (!ROOM_ID_RE.test(roomId)) return
+    if (passwordHash !== null && !HASH_RE.test(passwordHash)) throw new Error('Hash de senha inválido.')
+    const title = str(roomName)
+    if (this.db) {
+      await update(ref(this.db, `${this.root}/${roomId}`), {
+        hasPassword: passwordHash !== null,
+        passwordHash,
+        last_seen: serverTimestamp(),
+        ...(title ? { name: title } : {}),
+      })
+      return
+    }
+    const res = await fetch(this.url(roomId), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        hasPassword: passwordHash !== null,
+        passwordHash,
+        last_seen: { '.sv': 'timestamp' },
+        ...(title ? { name: title } : {}),
+      }),
+    })
+    if (!res.ok) throw new Error(`Firebase respondeu ${res.status}`)
+  }
 }
 
 // ─── Mock local (localStorage) ─────────────────────────────────────────
@@ -487,6 +556,24 @@ class LocalPresence implements PresenceProvider {
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
   }
+
+  async getRoomSecurity(roomId: string): Promise<RoomSecurityMeta> {
+    return roomSecurityFromRaw(ROOM_ID_RE.test(roomId) ? this.read()[roomId] : null)
+  }
+
+  async setRoomPassword(roomId: string, roomName: string | undefined, passwordHash: string | null): Promise<void> {
+    if (!ROOM_ID_RE.test(roomId)) return
+    const tree = this.read()
+    const name = str(roomName)
+    tree[roomId] = {
+      ...(tree[roomId] ?? {}),
+      ...(name ? { name } : {}),
+      hasPassword: passwordHash !== null,
+      passwordHash,
+      last_seen: Date.now(),
+    }
+    this.write(tree)
+  }
 }
 
 // ─── Desativado ────────────────────────────────────────────────────────
@@ -505,6 +592,10 @@ class NoopPresence implements PresenceProvider {
   async heartbeat(): Promise<void> {}
   leave(): void {}
   prune(): void {}
+  async getRoomSecurity(): Promise<RoomSecurityMeta> {
+    return { active: false, online: 0, hasPassword: false, passwordHash: null }
+  }
+  async setRoomPassword(): Promise<void> {}
 }
 
 // ─── Fábrica (configurada via .env com fallbacks universais) ───────────
