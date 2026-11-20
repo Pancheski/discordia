@@ -18,6 +18,7 @@ interface ParticipantTileProps {
   connectionState?: PeerConnectionState
   compact?: boolean
   spotlight?: boolean
+  fill?: boolean
   voiceVolume?: number
   screenVolume?: number
   onVoiceVolumeChange?: (value: number) => void
@@ -48,6 +49,7 @@ export function ParticipantTile({
   connectionState = 'connected',
   compact = false,
   spotlight = false,
+  fill = false,
   voiceVolume = 1,
   screenVolume = 1,
   onVoiceVolumeChange,
@@ -320,7 +322,7 @@ export function ParticipantTile({
         onContextMenu={openOptionsFromContext}
         title={hasActiveCamera ? 'Clique duas vezes para focar a câmera' : 'Clique duas vezes para expandir'}
         className={`group relative flex ${
-          spotlight ? 'h-full w-full' : 'aspect-video min-h-36 w-full'
+          spotlight || fill ? 'h-full w-full' : 'aspect-video min-h-36 w-full'
         } animate-fade-up cursor-pointer select-none items-center justify-center overflow-hidden rounded-xl bg-dc-darker ring-2 transition-all duration-200 ${
           speaking ? 'ring-dc-green shadow-[0_0_24px_rgba(35,165,90,0.35)]' : 'ring-white/[0.03]'
         }`}

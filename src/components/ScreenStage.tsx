@@ -278,3 +278,95 @@ export function ScreenThumb({ screen, active, onSelect }: ScreenThumbProps) {
     </button>
   )
 }
+
+interface ScreenMosaicTileProps {
+  screen: ScreenSource
+  onSelect: () => void
+}
+
+/**
+ * Cartão de transmissão de tela no mosaico automático (quando nenhuma tela está focada).
+ * Exibe o stream de tela em tempo real sem cortes (`object-contain`) e permite focar
+ * com um clique ou duplo clique para abrir no palco principal com controles completos.
+ */
+export function ScreenMosaicTile({ screen, onSelect }: ScreenMosaicTileProps) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => {
+    const videoEl = videoRef.current
+    if (!videoEl) return
+
+    if (!screen.stream) {
+      if (videoEl.srcObject) {
+        videoEl.srcObject = null
+      }
+      return
+    }
+
+    if (videoEl.srcObject !== screen.stream) {
+      videoEl.srcObject = screen.stream
+    }
+
+    videoEl.play().catch((err: unknown) => {
+      if (err instanceof DOMException && err.name === 'AbortError') return
+      console.debug('[discordia] mosaic screen play() aguardando interação:', err)
+    })
+  }, [screen.stream])
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onDoubleClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelect()
+        }
+      }}
+      title={`Clique para assistir à tela de ${screen.isLocal ? 'você' : screen.name} em tela cheia`}
+      className="group relative flex h-full w-full cursor-pointer select-none items-center justify-center overflow-hidden rounded-xl bg-black ring-2 ring-dc-red/45 transition-all duration-200 hover:ring-dc-brand"
+    >
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+      />
+
+      {!screen.stream && (
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/80 px-4 text-center text-xs text-dc-muted">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-dc-brand border-t-transparent" />
+          <span>Conectando à tela de {screen.isLocal ? 'você' : screen.name}…</span>
+        </div>
+      )}
+
+      {/* Badge superior esquerdo: AO VIVO */}
+      <div className="absolute left-2.5 top-2.5 z-10 flex items-center gap-1.5">
+        <span className="inline-flex items-center gap-1.5 rounded-md bg-dc-red/95 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white shadow-md">
+          <MonitorUp size={11} className="shrink-0" />
+          <span className="h-1.5 w-1.5 animate-live rounded-full bg-white" />
+          <span>AO VIVO · Tela</span>
+        </span>
+      </div>
+
+      {/* Botão discreto de foco no canto superior direito */}
+      <div className="absolute right-2.5 top-2.5 z-10 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+        <span className="inline-flex items-center gap-1 rounded-md bg-black/75 px-2.5 py-1 text-[11px] font-bold text-white shadow backdrop-blur-sm">
+          <Maximize2 size={12} />
+          <span>Focar Tela</span>
+        </span>
+      </div>
+
+      {/* Tarja semitransparente na base */}
+      <div className="absolute bottom-0 left-0 right-0 z-10 flex items-center justify-between gap-2 bg-black/60 px-2.5 py-1.5 text-xs backdrop-blur-sm">
+        <span className="truncate font-medium text-white">
+          {screen.isLocal ? 'Sua transmissão de tela' : `Tela de ${screen.name}`}
+        </span>
+        <span className="shrink-0 text-[10px] font-semibold text-white/75">Clique para assistir</span>
+      </div>
+    </div>
+  )
+}

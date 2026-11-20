@@ -30,11 +30,13 @@ import { ParticipantTile } from './ParticipantTile'
 import { RemotePlayControl } from './RemotePlayControl'
 import { Roulette3D } from './Roulette3D'
 import { RpsDuelModal } from './RpsDuelModal'
-import { ScreenStage, ScreenThumb } from './ScreenStage'
+import { ScreenMosaicTile, ScreenStage, ScreenThumb } from './ScreenStage'
 import type { ScreenSource } from './ScreenStage'
 import { Sidebar } from './Sidebar'
 import { SoundboardPopover } from './SoundboardPopover'
 import { TrioGame3D } from './TrioGame3D'
+import { VideoMosaic } from './VideoMosaic'
+import type { MosaicItem } from './VideoMosaic'
 import { playUiSfx } from '../hooks/useAudioSystem'
 import type { RoomController } from '../hooks/useRoom'
 import { loadSavedKeybinds, type KeybindShortcuts } from '../lib/keybinds'
@@ -903,16 +905,65 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
               </div>
             </>
           ) : (
-            <div className="flex h-full w-full min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
-              {tiles.length === 1 ? (
-                (() => {
-                  const { key, screenId, voiceVolume, screenVolume, ...t } = tiles[0]
-                  return (
-                    <div className="flex w-full max-w-2xl items-center justify-center my-auto">
-                      <div className="w-full max-w-2xl aspect-video">
+            (() => {
+              const isCameraLive = (stream: MediaStream | null) =>
+                Boolean(stream && stream.getVideoTracks().some((track) => track.readyState === 'live'))
+
+              const activeCameraTiles = tiles.filter((t) => isCameraLive(t.cameraStream))
+              const audioOnlyTiles = tiles.filter((t) => !isCameraLive(t.cameraStream))
+              const hasActiveVisualFeeds = screens.length > 0 || activeCameraTiles.length > 0
+
+              const renderMosaicParticipantTile = ({
+                key,
+                screenId,
+                voiceVolume,
+                screenVolume,
+                ...t
+              }: (typeof tiles)[number]) => (
+                <ParticipantTile
+                  key={`mosaic-tile-${key}`}
+                  {...t}
+                  fill
+                  voiceVolume={voiceVolume}
+                  screenVolume={screenVolume}
+                  onVoiceVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'mic', v) : undefined}
+                  onScreenVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'screen', v) : undefined}
+                  canKick={isLocalOwner && !t.isLocal}
+                  onKick={isLocalOwner && !t.isLocal && t.peerId ? () => kickParticipant(t.peerId) : undefined}
+                  onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
+                  isWatchingScreen={false}
+                  onChallengeRps={challengeRps}
+                  onDoubleClick={() => handleTileDoubleClick(key)}
+                />
+              )
+
+              const mosaicItems: MosaicItem[] = hasActiveVisualFeeds
+                ? [
+                    ...screens.map((s) => ({
+                      key: `mosaic-screen-${s.id}`,
+                      node: <ScreenMosaicTile screen={s} onSelect={() => handleWatchScreen(s.id)} />,
+                    })),
+                    ...activeCameraTiles.map((tile) => ({
+                      key: `mosaic-camera-${tile.key}`,
+                      node: renderMosaicParticipantTile(tile),
+                    })),
+                  ]
+                : tiles.map((tile) => ({
+                    key: `mosaic-avatar-${tile.key}`,
+                    node: renderMosaicParticipantTile(tile),
+                  }))
+
+              return (
+                <>
+                  <VideoMosaic items={mosaicItems} />
+
+                  {hasActiveVisualFeeds && audioOnlyTiles.length > 0 && (
+                    <div className="flex shrink-0 flex-row items-center gap-3 overflow-x-auto py-1">
+                      {audioOnlyTiles.map(({ key, screenId, voiceVolume, screenVolume, ...t }) => (
                         <ParticipantTile
-                          key={key}
+                          key={`mosaic-audio-tile-${key}`}
                           {...t}
+                          compact
                           voiceVolume={voiceVolume}
                           screenVolume={screenVolume}
                           onVoiceVolumeChange={
@@ -928,39 +979,12 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                           onChallengeRps={challengeRps}
                           onDoubleClick={() => handleTileDoubleClick(key)}
                         />
-                      </div>
+                      ))}
                     </div>
-                  )
-                })()
-              ) : (
-                <div
-                  className={`w-full my-auto ${
-                    tiles.length === 2
-                      ? 'grid grid-cols-1 md:grid-cols-2 gap-4 max-w-5xl'
-                      : tiles.length <= 4
-                        ? 'grid grid-cols-2 gap-4 max-w-5xl'
-                        : 'grid grid-cols-2 lg:grid-cols-3 gap-4 max-w-6xl'
-                  }`}
-                >
-                  {tiles.map(({ key, screenId, voiceVolume, screenVolume, ...t }) => (
-                    <ParticipantTile
-                      key={key}
-                      {...t}
-                      voiceVolume={voiceVolume}
-                      screenVolume={screenVolume}
-                      onVoiceVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'mic', v) : undefined}
-                      onScreenVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'screen', v) : undefined}
-                      canKick={isLocalOwner && !t.isLocal}
-                      onKick={isLocalOwner && !t.isLocal && t.peerId ? () => kickParticipant(t.peerId) : undefined}
-                      onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
-                      isWatchingScreen={false}
-                      onChallengeRps={challengeRps}
-                      onDoubleClick={() => handleTileDoubleClick(key)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
+                  )}
+                </>
+              )
+            })()
           )}
         </section>
 
