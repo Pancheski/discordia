@@ -1,0 +1,53 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "discordia_rooms": {
+      ".read": true,
+      ".write": false,
+      "$roomId": {
+        ".read": true,
+        ".write": true,
+        ".validate": "$roomId.matches(/^[a-z0-9-]{1,32}$/)",
+        "name": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 32"
+        },
+        "count": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 20"
+        },
+        "last_seen": {
+          ".validate": "newData.isNumber()"
+        },
+        "hasPassword": {
+          ".validate": "newData.isBoolean()"
+        },
+        "passwordHash": {
+          ".validate": "newData.isString() && newData.val().matches(/^[a-f0-9]{64}$/)"
+        },
+        "members": {
+          "$peerId": {
+            ".validate": "$peerId.matches(/^[A-Za-z0-9_-]{1,96}$/) && newData.hasChildren(['name', 'last_seen'])",
+            "name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 24"
+            },
+            "last_seen": {
+              ".validate": "newData.isNumber()"
+            },
+            "joined_at": {
+              ".validate": "newData.isNumber()"
+            },
+            "has_camera": {
+              ".validate": "newData.isBoolean()"
+            },
+            "$otherMemberProp": {
+              ".validate": false
+            }
+          }
+        },
+        "$otherRoomProp": {
+          ".validate": false
+        }
+      }
+    }
+  }
+}

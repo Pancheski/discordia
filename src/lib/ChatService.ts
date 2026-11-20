@@ -7,7 +7,7 @@ import {
   sendFileOverDataChannel,
 } from './fileTransfer'
 import { downloadUrl, randomId, sanitizeFileName } from './fileUtils'
-import { sanitizeName } from './utils'
+import { MAX_CHAT_MESSAGE_LENGTH, sanitizeChatMessage, sanitizeUsername } from '../utils/sanitize'
 import type {
   ChatMessage,
   ChatSnapshot,
@@ -22,7 +22,7 @@ export { FILE_CHUNK_SIZE }
 const FILE_CHANNEL_OPEN_TIMEOUT_MS = 12000
 const EMIT_THROTTLE_MS = 100
 const MAX_MESSAGES = 500
-const MAX_TEXT_LENGTH = 4000
+const MAX_TEXT_LENGTH = MAX_CHAT_MESSAGE_LENGTH
 
 export interface ChatPeer {
   id: string
@@ -101,7 +101,7 @@ export class ChatService {
   // ════════════════════════════════════════════════════════════════════
 
   sendText(raw: string): boolean {
-    const text = raw.trim().slice(0, MAX_TEXT_LENGTH)
+    const text = sanitizeChatMessage(raw).slice(0, MAX_TEXT_LENGTH)
     if (!text || this.disposed) return false
     const id = randomId()
     const ts = Date.now()
@@ -187,7 +187,7 @@ export class ChatService {
       case 'chat': {
         if (!isValidId(msg.id) || typeof msg.text !== 'string') return
         if (this.messages.some((m) => m.id === msg.id)) return
-        const text = msg.text.trim().slice(0, MAX_TEXT_LENGTH)
+        const text = sanitizeChatMessage(msg.text).slice(0, MAX_TEXT_LENGTH)
         if (!text) return
         this.pushMessage({
           kind: 'text',
@@ -195,7 +195,7 @@ export class ChatService {
           text,
           ts: Date.now(),
           authorId: fromId,
-          authorName: sanitizeName(this.transport.peerName(fromId)),
+          authorName: sanitizeUsername(this.transport.peerName(fromId)),
           isLocal: false,
         })
         this.emitNow()
@@ -554,7 +554,7 @@ export class ChatService {
       transferId: id,
       ts: Date.now(),
       authorId: fromId,
-      authorName: sanitizeName(this.transport.peerName(fromId)),
+      authorName: sanitizeUsername(this.transport.peerName(fromId)),
       isLocal: false,
     })
   }

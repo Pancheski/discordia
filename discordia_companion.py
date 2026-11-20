@@ -11,11 +11,15 @@ Inclui lazy-loading do driver ViGEmBus e auto-instalação de 1 clique sem crash
 caso o driver ainda não esteja presente no Windows.
 """
 
+import argparse
 import asyncio
 import ctypes
+import hmac
 import json
 import logging
+import math
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -34,9 +38,110 @@ try:
 except ImportError:
     HAS_TRAY = False
 
-HOST = "127.0.0.1"
+HOST = "127.0.0.1"  # SOMENTE loopback: nunca exponha em 0.0.0.0 (rede local/internet)
 PORT = 8765
 SINGLE_INSTANCE_MUTEX = "Global\\DiscordiaHostCompanionMutex_v1"
+
+# ─── Proteção contra Cross-Site WebSocket Hijacking (CSWSH) ────────────────
+# Navegadores SEMPRE enviam o header Origin em handshakes WebSocket; qualquer site
+# aberto em outra aba poderia tentar se conectar a ws://127.0.0.1:8765. Só aceitamos
+# origens do Discordia. Conexões sem Origin vêm de processos locais (ex.: processo
+# principal do Electron), que não são vetor de CSWSH.
+# Origens extras podem ser liberadas via env DISCORDIA_ALLOWED_ORIGINS (separadas por vírgula).
+ALLOWED_ORIGIN_EXACT = {
+    "file://",
+    "app://discordia",
+    "https://discordia-seven.vercel.app",
+    "https://discordia-pancheski1.vercel.app",
+} | {o.strip().rstrip("/") for o in os.environ.get("DISCORDIA_ALLOWED_ORIGINS", "").split(",") if o.strip()}
+ALLOWED_ORIGIN_PATTERNS = [
+    # Dev local (Vite / preview) em qualquer porta
+    re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d{1,5})?$"),
+    # Protocolo customizado Electron
+    re.compile(r"^app://[a-z0-9._-]+$"),
+    # Domínio oficial do Discordia na Vercel (produção e previews do projeto)
+    re.compile(r"^https://discordia(?:-[a-z0-9-]+)?\.vercel\.app$"),
+]
+# Origem "null" (iframes sandbox, data:) é deliberadamente BLOQUEADA: qualquer site pode gerá-la.
+
+MAX_SLOT = 4
+MAX_BUTTONS = 17
+AUTH_TIMEOUT_SECONDS = 5.0
+
+
+def parse_session_token() -> Optional[str]:
+    """Lê token de sessão gerado pelo Electron (--session-token ou DISCORDIA_SESSION_TOKEN)."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--session-token", dest="session_token", default=None)
+    args, _ = parser.parse_known_args()
+    raw = args.session_token or os.environ.get("DISCORDIA_SESSION_TOKEN") or ""
+    token = raw.strip()
+    return token if len(token) >= 16 else None
+
+
+SESSION_TOKEN: Optional[str] = parse_session_token()
+
+
+def is_origin_allowed(origin: Optional[str]) -> bool:
+    if origin is None:
+        return True  # cliente não-navegador (processo local)
+    cleaned = origin.strip()
+    if cleaned in ALLOWED_ORIGIN_EXACT:
+        return True
+    normalized = cleaned.rstrip("/")
+    if normalized in ALLOWED_ORIGIN_EXACT:
+        return True
+    return any(p.match(normalized) for p in ALLOWED_ORIGIN_PATTERNS)
+
+
+def get_request_origin(websocket: Any) -> Optional[str]:
+    """Lê o header Origin nas APIs nova (websockets>=13) e legada."""
+    request = getattr(websocket, "request", None)
+    headers = getattr(request, "headers", None) if request is not None else None
+    if headers is None:
+        headers = getattr(websocket, "request_headers", None)
+    if headers is None:
+        return None
+    return headers.get("Origin")
+
+
+def parse_slot(value: Any) -> Optional[int]:
+    """Slot válido: inteiro 1..4 (bool e floats não inteiros são rejeitados)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, int) and 1 <= value <= MAX_SLOT:
+        return value
+    return None
+
+
+def _finite_numbers(values: Any, max_len: int) -> Optional[List[float]]:
+    if not isinstance(values, list) or len(values) > max_len:
+        return None
+    out: List[float] = []
+    for v in values:
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            return None
+        out.append(float(v))
+    return out
+
+
+def sanitize_gamepad_state(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Mantém apenas slot/buttons/axes/triggers numéricos e dentro dos limites."""
+    slot = parse_slot(data.get("slot"))
+    buttons = _finite_numbers(data.get("buttons", []), MAX_BUTTONS)
+    axes = _finite_numbers(data.get("axes", [0.0, 0.0, 0.0, 0.0]), 4)
+    triggers = _finite_numbers(data.get("triggers", []), 2)
+    if slot is None or buttons is None or axes is None or triggers is None:
+        return None
+    return {
+        "type": "gamepad:state",
+        "slot": slot,
+        "buttons": [clamp(b, 0.0, 1.0) for b in buttons],
+        "axes": [clamp(a, -1.0, 1.0) for a in axes],
+        "triggers": [clamp(t, 0.0, 1.0) for t in triggers],
+    }
 
 logging.basicConfig(
     level=logging.INFO,
@@ -355,11 +460,9 @@ class MultiGamepadManager:
                 pass
 
     def apply_state(self, payload: Dict[str, Any]) -> None:
-        raw_slot = payload.get("slot") or payload.get("player") or 1
-        try:
-            slot = int(raw_slot)
-        except (TypeError, ValueError):
-            slot = 1
+        slot = parse_slot(payload.get("slot"))
+        if slot is None:
+            return
         ctrl = self.get_or_create(slot)
         if ctrl:
             ctrl.apply_state(payload)
@@ -392,7 +495,38 @@ class CompanionServer:
 
     async def handle_client(self, websocket: Any) -> None:
         peer = getattr(websocket, "remote_address", ("127.0.0.1", 0))
-        logger.info("Discordia conectado (%s).", peer)
+        origin = get_request_origin(websocket)
+
+        # 1) Defesa em profundidade: aceita apenas clientes da própria máquina
+        peer_host = peer[0] if isinstance(peer, (tuple, list)) and peer else ""
+        if peer_host not in ("127.0.0.1", "::1", "localhost"):
+            logger.warning("Conexão recusada de endereço não-loopback: %s", peer)
+            await websocket.close(code=1008, reason="loopback only")
+            return
+
+        # 2) Anti-CSWSH: recusa abas/sites que não sejam o Discordia, ANTES de enviar qualquer dado
+        if not is_origin_allowed(origin):
+            logger.warning("Conexão recusada: Origin não autorizado (%s).", origin)
+            await websocket.close(code=1008, reason="origin not allowed")
+            return
+
+        # 3) Handshake de token de sessão (quando iniciado pelo Electron com --session-token)
+        if SESSION_TOKEN is not None:
+            try:
+                first_raw = await asyncio.wait_for(websocket.recv(), timeout=AUTH_TIMEOUT_SECONDS)
+                first_msg = json.loads(first_raw) if isinstance(first_raw, (str, bytes)) else None
+            except Exception:
+                logger.warning("Conexão recusada: falha/timeout no handshake de autenticação (%s).", peer)
+                await websocket.close(code=1008, reason="auth required")
+                return
+
+            presented = first_msg.get("token") if isinstance(first_msg, dict) and first_msg.get("type") == "auth" else None
+            if not isinstance(presented, str) or not hmac.compare_digest(presented, SESSION_TOKEN):
+                logger.warning("Conexão recusada: token de sessão inválido (%s).", peer)
+                await websocket.close(code=1008, reason="invalid session token")
+                return
+
+        logger.info("Discordia conectado (%s, origin=%s).", peer, origin or "-")
 
         # Desativa algoritmo de Nagle (TCP_NODELAY = 1) para envio instantâneo sem agregação de pacotes
         try:
@@ -418,27 +552,33 @@ class CompanionServer:
             async for raw_message in websocket:
                 try:
                     data = json.loads(raw_message)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(data, dict):
                     continue
 
                 msg_type = data.get("type")
+                if msg_type == "auth":
+                    continue
                 if msg_type == "gamepad:state":
-                    self.manager.apply_state(data)
+                    clean = sanitize_gamepad_state(data)
+                    if clean is not None:
+                        self.manager.apply_state(clean)
                 elif msg_type == "gamepad:connect":
-                    slot = int(data.get("slot") or 1)
-                    self.manager.get_or_create(slot)
-                elif msg_type == "gamepad:disconnect":
-                    slot = int(data.get("slot") or 1)
-                    self.manager.disconnect(slot)
-                elif msg_type == "gamepad:release":
-                    slot = data.get("slot")
+                    slot = parse_slot(data.get("slot"))
                     if slot is not None:
-                        try:
-                            self.manager.reset_slot(int(slot))
-                        except (TypeError, ValueError):
-                            self.manager.reset_all()
-                    else:
+                        self.manager.get_or_create(slot)
+                elif msg_type == "gamepad:disconnect":
+                    slot = parse_slot(data.get("slot"))
+                    if slot is not None:
+                        self.manager.disconnect(slot)
+                elif msg_type == "gamepad:release":
+                    if data.get("slot") is None:
                         self.manager.reset_all()
+                    else:
+                        slot = parse_slot(data.get("slot"))
+                        if slot is not None:
+                            self.manager.reset_slot(slot)
                 elif msg_type == "driver:install":
                     logger.info("Solicitação de instalação do driver ViGEmBus recebida via WebSocket.")
                     success = install_vigem_driver()
@@ -472,7 +612,7 @@ class CompanionServer:
             HOST,
             PORT,
             compression=None,
-            max_size=65536,
+            max_size=16384,
             ping_interval=15,
             ping_timeout=15,
         ):

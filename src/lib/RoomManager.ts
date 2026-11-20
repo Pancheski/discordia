@@ -14,6 +14,7 @@ import {
   resolveTrioTurnAfterDelay,
 } from './trioEngine'
 import {
+  APP_PREFIX,
   MAX_PEERS,
   clamp,
   generateSessionPeerId,
@@ -22,6 +23,14 @@ import {
   slotPeerId,
   slugifyRoom,
 } from './utils'
+import {
+  sanitizeGamepadPayload,
+  sanitizeGolfHole,
+  sanitizeGolfReset,
+  sanitizeGolfStroke,
+  sanitizeUsername,
+  stripHtmlAndControl,
+} from '../utils/sanitize'
 import { playSoundboardSfx, playUiSfx } from '../hooks/useAudioSystem'
 import type {
   AppActivityId,
@@ -174,6 +183,7 @@ export class RoomManager {
   private driverReady = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
   private installingDriver = false
   private companionRetryTimer: number | null = null
+  private readonly activePresencePeerIds = new Set<string>()
   private readonly sentCustomSfxByPeer = new Map<string, Set<string>>()
   private local: LocalState = {
     peerId: '',
@@ -292,14 +302,19 @@ export class RoomManager {
     window.addEventListener('beforeunload', this.handleUnload)
 
     const presence = getPresence()
-    void presence
-      .heartbeat(
+    // Publica presença ANTES de iniciar conexões P2P para que os pares remotos
+    // validem nosso peerId no Firebase imediatamente ao receberem call/connection.
+    try {
+      await presence.heartbeat(
         this.room,
         this.room,
         { id: this.local.peerId, name: this.local.name, joinedAt: this.joinedAt, hasCamera: Boolean(this.cameraStream) },
         1,
       )
-      .catch((err) => console.warn('[WebRTC] Falha ao registrar presença inicial:', err))
+    } catch (err) {
+      console.warn('[WebRTC] Falha ao registrar presença inicial:', err)
+    }
+    if (this.destroyed) return false
 
     // Escuta em tempo real `discordia_rooms/${roomId}/members` via Firebase onValue
     this.presenceUnsub = presence.watchRoomMembers(this.room, (members) => {
@@ -1434,6 +1449,7 @@ export class RoomManager {
     this.remoteControllers = {}
     this.closeCompanionBridge()
     this.remotePlayGrant = null
+    this.activePresencePeerIds.clear()
     this.sentCustomSfxByPeer.clear()
     playUiSfx('leave')
 
@@ -1670,21 +1686,88 @@ export class RoomManager {
     }, delay)
   }
 
+  /** Valida se o peerId possui o prefixo estrito da sala atual (`discordia-v1-${room}-`). */
+  private hasCurrentRoomPeerPrefix(peerId: unknown): peerId is string {
+    if (typeof peerId !== 'string' || !this.room) return false
+    const expectedPrefix = `${APP_PREFIX}-${this.room}-`
+    if (!peerId.startsWith(expectedPrefix)) return false
+    const suffix = peerId.slice(expectedPrefix.length)
+    return /^[A-Za-z0-9_-]{1,32}$/.test(suffix)
+  }
+
+  /**
+   * Verificador de identidade P2P: exige prefixo exato da sala atual E presença ativa
+   * no Firebase (com lookup sob demanda para evitar falsos negativos em corrida de entrada).
+   */
+  private async verifyPeerInActiveRoom(peerId: string): Promise<boolean> {
+    if (!this.hasCurrentRoomPeerPrefix(peerId)) return false
+    const presence = getPresence()
+    if (presence.kind === 'off') return true
+    if (this.activePresencePeerIds.has(peerId)) return true
+    try {
+      const members = await presence.getRoomMembers(this.room)
+      if (this.destroyed) return false
+      for (const m of members) {
+        if (m.id && this.hasCurrentRoomPeerPrefix(m.id)) {
+          this.activePresencePeerIds.add(m.id)
+        }
+      }
+      return this.activePresencePeerIds.has(peerId)
+    } catch {
+      return false
+    }
+  }
+
+  private acceptVerifiedConnection(conn: DataConnection): void {
+    if (this.destroyed) {
+      conn.close()
+      return
+    }
+    this.emptySlotCooldowns.delete(conn.peer)
+    const meta = (conn.metadata ?? {}) as { channel?: unknown }
+    if (meta.channel === FILES_CHANNEL) {
+      // Canal dedicado de arquivos (unidirecional: o par remoto envia, nós recebemos)
+      if (conn.open) {
+        this.chat.acceptFileChannel(conn)
+      } else {
+        conn.on('open', () => this.chat.acceptFileChannel(conn))
+      }
+      conn.on('error', (err) => console.warn('[WebRTC] files (in)', err))
+      return
+    }
+    this.prepareIncomingData(conn)
+  }
+
   private bindPeerEvents(peer: Peer): void {
     peer.on('connection', (conn) => {
-      if (this.destroyed) {
-        conn.close()
+      if (this.destroyed || !this.hasCurrentRoomPeerPrefix(conn.peer)) {
+        console.warn('[AppSec] Conexão P2P rejeitada (prefixo de sala inválido):', conn.peer)
+        try {
+          conn.close()
+        } catch {
+          /* ignore */
+        }
         return
       }
-      this.emptySlotCooldowns.delete(conn.peer)
-      const meta = (conn.metadata ?? {}) as { channel?: unknown }
-      if (meta.channel === FILES_CHANNEL) {
-        // Canal dedicado de arquivos (unidirecional: o par remoto envia, nós recebemos)
-        conn.on('open', () => this.chat.acceptFileChannel(conn))
-        conn.on('error', (err) => console.warn('[WebRTC] files (in)', err))
+
+      if (getPresence().kind === 'off' || this.activePresencePeerIds.has(conn.peer)) {
+        this.acceptVerifiedConnection(conn)
         return
       }
-      this.prepareIncomingData(conn)
+
+      // Não processa dados até confirmar que o peer consta na lista ativa da sala no Firebase
+      void this.verifyPeerInActiveRoom(conn.peer).then((authorized) => {
+        if (!authorized || this.destroyed) {
+          console.warn('[AppSec] Conexão P2P rejeitada (peer ausente na presença da sala):', conn.peer)
+          try {
+            conn.close()
+          } catch {
+            /* ignore */
+          }
+          return
+        }
+        this.acceptVerifiedConnection(conn)
+      })
     })
 
     peer.on('call', (call) => this.handleIncomingCall(call))
@@ -1768,6 +1851,7 @@ export class RoomManager {
     const activeIds = new Set<string>()
     for (const m of members) {
       if (!m.id || m.id === this.local.peerId) continue
+      if (!this.hasCurrentRoomPeerPrefix(m.id)) continue
       activeIds.add(m.id)
       this.emptySlotCooldowns.delete(m.id)
 
@@ -1799,6 +1883,10 @@ export class RoomManager {
         this.callPeer(link, 'camera')
       }
     }
+
+    // Atualiza o snapshot de membros autorizados desta sala no Firebase
+    this.activePresencePeerIds.clear()
+    for (const id of activeIds) this.activePresencePeerIds.add(id)
 
     // Remove links que saíram do nó `members` no Firebase e não têm canal P2P aberto
     for (const [id, link] of this.links.entries()) {
@@ -2088,23 +2176,24 @@ export class RoomManager {
   private forwardGamepadPacketFromPeer(fromId: string, rawJson: string): void {
     if (this.destroyed) return
     if (this.remotePlayGrant?.hostId !== this.local.peerId) return
+    if (!Object.prototype.hasOwnProperty.call(this.remoteControllers, fromId)) return
     const slot = this.remoteControllers[fromId]
-    if (!slot) return
+    if (!slot || !Number.isInteger(slot) || slot < 1 || slot > 4) return
 
-    let packet: Record<string, unknown>
+    let parsed: unknown
     try {
-      packet = JSON.parse(rawJson)
+      parsed = JSON.parse(rawJson)
     } catch {
       return
     }
 
-    // Garante que o slot de controle anexado seja sempre o do participante autorizado
-    packet.slot = slot
-    packet.player = slot
+    // Type Guard estrito: descarta campos desconhecidos e restringe botões/eixos às faixas válidas
+    const cleanPacket = sanitizeGamepadPayload(parsed, slot)
+    if (!cleanPacket) return
 
     if (typeof window !== 'undefined' && window.electron?.isElectron) {
       try {
-        window.electron.sendGamepadState(packet)
+        window.electron.sendGamepadState(cleanPacket)
       } catch {
         /* ignore */
       }
@@ -2116,7 +2205,7 @@ export class RoomManager {
       return
     }
     try {
-      this.companionWs.send(JSON.stringify(packet))
+      this.companionWs.send(JSON.stringify(cleanPacket))
     } catch {
       /* ignore */
     }
@@ -2311,6 +2400,7 @@ export class RoomManager {
   }
 
   private handleData(id: string, raw: unknown): void {
+    if (this.destroyed || !this.hasCurrentRoomPeerPrefix(id)) return
     if (!raw || typeof raw !== 'object' || !('type' in raw)) return
     const msg = raw as PeerMessage
     const link = this.ensureLink(id, undefined, true)
@@ -2344,28 +2434,27 @@ export class RoomManager {
       }
       case 'screen:request-stream': {
         if (msg.toPeerId === this.local.peerId && this.screenStream) {
-          const requesterLink = this.links.get(msg.fromPeerId)
+          const requesterLink = this.links.get(id)
           if (requesterLink) {
-            console.info(`[WebRTC] Retransmitindo stream de tela sob demanda para ${msg.fromPeerId}`)
+            console.info(`[WebRTC] Retransmitindo stream de tela sob demanda para ${id}`)
             this.callPeer(requesterLink, 'screen')
           }
         }
         return
       }
       case 'camera:stop': {
-        const targetId = msg.peerId || id
-        const targetLink = this.links.get(targetId)
+        const targetLink = this.links.get(id)
         if (targetLink) {
           this.applyRemoteCamera(targetLink, false)
         } else {
-          delete this.cameraStreams[targetId]
+          delete this.cameraStreams[id]
         }
         this.emit()
         return
       }
       case 'camera:request-stream': {
         if (msg.toPeerId === this.local.peerId && this.cameraStream) {
-          const requesterLink = this.links.get(msg.fromPeerId)
+          const requesterLink = this.links.get(id)
           if (requesterLink) {
             this.callPeer(requesterLink, 'camera')
           }
@@ -2383,8 +2472,14 @@ export class RoomManager {
         return
       }
       case 'play-sfx': {
-        if (typeof msg.sfxId === 'string') {
-          playSoundboardSfx(msg.sfxId, msg.dataUrl, msg.customName)
+        if (typeof msg.sfxId === 'string' && msg.sfxId.length > 0 && msg.sfxId.length <= 64) {
+          const safeDataUrl =
+            typeof msg.dataUrl === 'string' && /^data:audio\/[a-z0-9.+-]+;base64,/i.test(msg.dataUrl)
+              ? msg.dataUrl
+              : undefined
+          const safeCustomName =
+            typeof msg.customName === 'string' ? stripHtmlAndControl(msg.customName, false).trim().slice(0, 40) : undefined
+          playSoundboardSfx(msg.sfxId, safeDataUrl, safeCustomName)
           this.toast('info', `🔊 ${link.info.name} tocou um som no Soundboard`)
         }
         return
@@ -2429,22 +2524,37 @@ export class RoomManager {
       }
       case 'wheel:update': {
         if (Array.isArray(msg.options)) {
-          this.wheelState = { ...this.wheelState, options: msg.options }
-          this.cb.onWheelChange(this.wheelState)
+          const cleanOptions = msg.options
+            .filter((o): o is string => typeof o === 'string')
+            .map((o) => stripHtmlAndControl(o, false).trim().slice(0, 64))
+            .filter(Boolean)
+            .slice(0, 32)
+          if (cleanOptions.length > 0) {
+            this.wheelState = { ...this.wheelState, options: cleanOptions }
+            this.cb.onWheelChange(this.wheelState)
+          }
         }
         return
       }
       case 'wheel:spin': {
-        if (typeof msg.targetAngle === 'number') {
+        if (typeof msg.targetAngle === 'number' && Number.isFinite(msg.targetAngle) && Number.isInteger(msg.winnerIndex)) {
+          const cleanOptions = Array.isArray(msg.options)
+            ? msg.options
+                .filter((o): o is string => typeof o === 'string')
+                .map((o) => stripHtmlAndControl(o, false).trim().slice(0, 64))
+                .filter(Boolean)
+                .slice(0, 32)
+            : this.wheelState.options
+          if (cleanOptions.length === 0 || msg.winnerIndex < 0 || msg.winnerIndex >= cleanOptions.length) return
           const spinId = ++this.spinSeq
           this.wheelState = {
-            options: Array.isArray(msg.options) ? msg.options : this.wheelState.options,
+            options: cleanOptions,
             lastSpin: {
               spinId,
               targetAngle: msg.targetAngle,
               winnerIndex: msg.winnerIndex,
-              startedBy: msg.startedBy || link.info.name,
-              options: Array.isArray(msg.options) ? msg.options : this.wheelState.options,
+              startedBy: sanitizeUsername(msg.startedBy || link.info.name),
+              options: cleanOptions,
             },
           }
           this.cb.onWheelChange(this.wheelState)
@@ -2452,37 +2562,59 @@ export class RoomManager {
         return
       }
       case 'golf:stroke': {
-        if (typeof msg.vx === 'number' && typeof msg.vz === 'number') {
+        const cleanStroke = sanitizeGolfStroke(msg)
+        if (cleanStroke) {
           this.cb.onGolfStroke({
             seq: ++this.golfSeq,
-            peerId: msg.peerId || id,
-            name: msg.name || link.info.name,
-            vx: msg.vx,
-            vz: msg.vz,
+            peerId: id,
+            name: sanitizeUsername(msg.name || link.info.name),
+            vx: cleanStroke.vx,
+            vz: cleanStroke.vz,
           })
         }
         return
       }
       case 'golf:reset': {
-        this.cb.onGolfReset({
-          seq: ++this.golfSeq,
-          courseIndex: msg.courseIndex ?? 0,
-        })
+        const cleanReset = sanitizeGolfReset(msg)
+        if (cleanReset) {
+          this.cb.onGolfReset({
+            seq: ++this.golfSeq,
+            courseIndex: cleanReset.courseIndex,
+          })
+        }
         return
       }
       case 'golf:hole': {
-        if (typeof msg.seed === 'number') {
+        const cleanHole = sanitizeGolfHole(msg)
+        if (cleanHole) {
           this.cb.onGolfHole({
             seq: ++this.golfSeq,
-            seed: msg.seed,
-            holeNumber: msg.holeNumber ?? 1,
-            par: msg.par ?? 3,
+            seed: cleanHole.seed,
+            holeNumber: cleanHole.holeNumber,
+            par: cleanHole.par,
           })
         }
         return
       }
       case 'gamepad:grant': {
-        const controllers = msg.controllers || {}
+        const rawControllers =
+          msg.controllers && typeof msg.controllers === 'object' && !Array.isArray(msg.controllers)
+            ? (msg.controllers as Record<string, unknown>)
+            : {}
+        const controllers: Record<string, number> = {}
+        for (const [peerId, slotVal] of Object.entries(rawControllers)) {
+          if (Object.keys(controllers).length >= 4) break
+          if (
+            this.hasCurrentRoomPeerPrefix(peerId) &&
+            typeof slotVal === 'number' &&
+            Number.isInteger(slotVal) &&
+            slotVal >= 1 &&
+            slotVal <= 4
+          ) {
+            controllers[peerId] = slotVal
+          }
+        }
+
         const mySlot = this.local.peerId ? controllers[this.local.peerId] : undefined
         const wasAuthorized = Boolean(this.remotePlayGrant?.controllers?.[this.local.peerId])
         const isNowAuthorized = Boolean(mySlot)
@@ -2499,11 +2631,11 @@ export class RoomManager {
 
         this.remoteControllers = { ...controllers }
         this.remotePlayGrant = {
-          hostId: msg.hostId || id,
-          hostName: msg.hostName || link.info.name,
+          hostId: id,
+          hostName: sanitizeUsername(msg.hostName || link.info.name),
           controllers,
           guestId: Object.keys(controllers)[0] || null,
-          guestName: msg.guestName || null,
+          guestName: typeof msg.guestName === 'string' ? sanitizeUsername(msg.guestName) : null,
         }
         this.notifyRemotePlay()
 
@@ -2520,8 +2652,10 @@ export class RoomManager {
         return
       }
       case 'gamepad:release': {
+        if (this.remotePlayGrant?.hostId !== this.local.peerId) return
+        if (!Object.prototype.hasOwnProperty.call(this.remoteControllers, id)) return
         const slot = this.remoteControllers[id]
-        if (slot) {
+        if (slot && Number.isInteger(slot) && slot >= 1 && slot <= 4) {
           this.sendCompanionControl({ type: 'gamepad:release', slot })
         }
         return
@@ -2842,6 +2976,37 @@ export class RoomManager {
   }
 
   private handleIncomingCall(call: MediaConnection): void {
+    if (this.destroyed || !this.hasCurrentRoomPeerPrefix(call.peer)) {
+      console.warn('[AppSec] Chamada P2P rejeitada (prefixo de sala inválido):', call.peer)
+      try {
+        call.close()
+      } catch {
+        /* ignore */
+      }
+      return
+    }
+
+    if (getPresence().kind === 'off' || this.activePresencePeerIds.has(call.peer)) {
+      this.acceptVerifiedCall(call)
+      return
+    }
+
+    // Não chama call.answer() nem negocia ICE até confirmar presença ativa no Firebase
+    void this.verifyPeerInActiveRoom(call.peer).then((authorized) => {
+      if (!authorized || this.destroyed) {
+        console.warn('[AppSec] Chamada P2P rejeitada (peer ausente na presença da sala):', call.peer)
+        try {
+          call.close()
+        } catch {
+          /* ignore */
+        }
+        return
+      }
+      this.acceptVerifiedCall(call)
+    })
+  }
+
+  private acceptVerifiedCall(call: MediaConnection): void {
     if (this.destroyed) {
       call.close()
       return

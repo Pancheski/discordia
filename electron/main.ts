@@ -1,9 +1,97 @@
 import { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, shell, session } from 'electron'
+import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { spawn, type ChildProcess } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
+
+const DESKTOP_SOURCE_ID_RE = /^(screen|window):[A-Za-z0-9:_-]{1,128}$/
+const ACCELERATOR_RE = /^[A-Za-z0-9+\-_]{1,64}$/
+const MAX_GAMEPAD_BUTTONS = 17
+
+function parseValidSlot(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4 ? value : null
+}
+
+function clampFinite(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return Math.min(max, Math.max(min, value))
+}
+
+function sanitizeIpcGamepadState(raw: unknown): GamepadPacket | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const obj = raw as Record<string, unknown>
+  if (obj.type !== undefined && obj.type !== 'gamepad:state') return null
+
+  const slot = parseValidSlot(obj.slot ?? obj.player ?? 1)
+  if (slot === null) return null
+
+  if (!Array.isArray(obj.buttons) || obj.buttons.length > MAX_GAMEPAD_BUTTONS) return null
+  if (!Array.isArray(obj.axes) || obj.axes.length !== 4) return null
+
+  const buttons: number[] = []
+  for (const b of obj.buttons) {
+    const clean = clampFinite(b, 0, 1)
+    if (clean === null) return null
+    buttons.push(clean)
+  }
+
+  const axes: number[] = []
+  for (const a of obj.axes) {
+    const clean = clampFinite(a, -1, 1)
+    if (clean === null) return null
+    axes.push(clean)
+  }
+
+  const packet: GamepadPacket = {
+    type: 'gamepad:state',
+    slot,
+    player: slot,
+    buttons,
+    axes: [axes[0], axes[1], axes[2], axes[3]],
+  }
+
+  if (obj.triggers !== undefined) {
+    if (!Array.isArray(obj.triggers) || obj.triggers.length !== 2) return null
+    const lt = clampFinite(obj.triggers[0], 0, 1)
+    const rt = clampFinite(obj.triggers[1], 0, 1)
+    if (lt === null || rt === null) return null
+    packet.triggers = [lt, rt]
+  }
+
+  return packet
+}
+
+function parseValidAccelerator(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > 64 || !ACCELERATOR_RE.test(trimmed)) return null
+  const parts = trimmed.split('+').filter(Boolean)
+  if (parts.length === 0 || parts.length > 5) return null
+  return trimmed
+}
+
+function isAllowedAppUrl(rawUrl: string): boolean {
+  if (!rawUrl) return false
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL
+  try {
+    const parsed = new URL(rawUrl)
+    if (parsed.protocol === 'file:') return true
+    if (devServerUrl) {
+      const devParsed = new URL(devServerUrl)
+      return parsed.origin === devParsed.origin
+    }
+  } catch {
+    return false
+  }
+  return false
+}
+
+function isFromMainWindow(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents)
+}
 
 interface GamepadPacket {
   type: 'gamepad:state' | 'gamepad:release' | 'gamepad:connect' | 'gamepad:disconnect' | 'driver:install'
@@ -39,6 +127,7 @@ class IntegratedGamepadHost {
   private workerProcess: ChildProcess | null = null
   private wsSocket: WebSocket | null = null
   private wsConnecting = false
+  private readonly sessionToken = crypto.randomBytes(32).toString('hex')
 
   start(): void {
     this.tryInitNativeVigem()
@@ -75,10 +164,11 @@ class IntegratedGamepadHost {
     for (const exePath of candidates) {
       if (fs.existsSync(exePath)) {
         try {
-          this.workerProcess = spawn(exePath, [], {
+          this.workerProcess = spawn(exePath, ['--session-token', this.sessionToken], {
             windowsHide: true,
             stdio: 'ignore',
             detached: false,
+            env: { ...process.env, DISCORDIA_SESSION_TOKEN: this.sessionToken },
           })
           this.workerProcess.on('exit', () => {
             this.workerProcess = null
@@ -97,10 +187,11 @@ class IntegratedGamepadHost {
     for (const scriptPath of scriptCandidates) {
       if (fs.existsSync(scriptPath)) {
         try {
-          this.workerProcess = spawn('python', [scriptPath], {
+          this.workerProcess = spawn('python', [scriptPath, '--session-token', this.sessionToken], {
             windowsHide: true,
             stdio: 'ignore',
             detached: false,
+            env: { ...process.env, DISCORDIA_SESSION_TOKEN: this.sessionToken },
           })
           this.workerProcess.on('exit', () => {
             this.workerProcess = null
@@ -193,6 +284,8 @@ class IntegratedGamepadHost {
         ws.onopen = () => {
           this.wsConnecting = false
           try {
+            // Autentica o processo local do Electron via token efêmero antes de qualquer comando
+            ws.send(JSON.stringify({ type: 'auth', token: this.sessionToken }))
             ws.send(JSON.stringify(packet))
           } catch {
             /* ignore */
@@ -287,6 +380,9 @@ function createMainWindow(): void {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
       backgroundThrottling: false,
     },
   })
@@ -314,9 +410,20 @@ function createMainWindow(): void {
     void mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
+  mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    if (!isAllowedAppUrl(targetUrl)) {
+      event.preventDefault()
+    }
+  })
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      void shell.openExternal(url)
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        void shell.openExternal(parsed.href)
+      }
+    } catch {
+      /* URL inválida bloqueada */
     }
     return { action: 'deny' }
   })
@@ -327,12 +434,13 @@ function createMainWindow(): void {
 }
 
 // ─── IPC Janela (Minimize / Maximize / Close) ─────────────────────────────────
-ipcMain.on('window:minimize', () => {
+ipcMain.on('window:minimize', (event) => {
+  if (!isFromMainWindow(event)) return
   mainWindow?.minimize()
 })
 
-ipcMain.on('window:maximize', () => {
-  if (!mainWindow) return
+ipcMain.on('window:maximize', (event) => {
+  if (!isFromMainWindow(event) || !mainWindow) return
   if (mainWindow.isMaximized()) {
     mainWindow.unmaximize()
   } else {
@@ -340,34 +448,51 @@ ipcMain.on('window:maximize', () => {
   }
 })
 
-ipcMain.on('window:close', () => {
+ipcMain.on('window:close', (event) => {
+  if (!isFromMainWindow(event)) return
   mainWindow?.close()
 })
 
 // ─── IPC Remote Play ──────────────────────────────────────────────────────────
-ipcMain.on('gamepad:state', (_event, payload: unknown) => {
-  if (payload && typeof payload === 'object') {
-    gamepadHost.handlePacket(payload as GamepadPacket)
+ipcMain.on('gamepad:state', (event, payload: unknown) => {
+  if (!isFromMainWindow(event)) return
+  const clean = sanitizeIpcGamepadState(payload)
+  if (clean) {
+    gamepadHost.handlePacket(clean)
   }
 })
 
-ipcMain.on('gamepad:connect', (_event, slot: unknown) => {
-  gamepadHost.handlePacket({ type: 'gamepad:connect', slot: Number(slot) || 1 })
+ipcMain.on('gamepad:connect', (event, slot: unknown) => {
+  if (!isFromMainWindow(event)) return
+  const validSlot = parseValidSlot(slot)
+  if (validSlot !== null) {
+    gamepadHost.handlePacket({ type: 'gamepad:connect', slot: validSlot })
+  }
 })
 
-ipcMain.on('gamepad:disconnect', (_event, slot: unknown) => {
-  gamepadHost.handlePacket({ type: 'gamepad:disconnect', slot: Number(slot) || 1 })
+ipcMain.on('gamepad:disconnect', (event, slot: unknown) => {
+  if (!isFromMainWindow(event)) return
+  const validSlot = parseValidSlot(slot)
+  if (validSlot !== null) {
+    gamepadHost.handlePacket({ type: 'gamepad:disconnect', slot: validSlot })
+  }
 })
 
-ipcMain.on('gamepad:release', (_event, slot?: unknown) => {
-  gamepadHost.handlePacket({
-    type: 'gamepad:release',
-    slot: typeof slot === 'number' ? slot : undefined,
-  })
+ipcMain.on('gamepad:release', (event, slot?: unknown) => {
+  if (!isFromMainWindow(event)) return
+  if (slot === undefined || slot === null) {
+    gamepadHost.handlePacket({ type: 'gamepad:release' })
+    return
+  }
+  const validSlot = parseValidSlot(slot)
+  if (validSlot !== null) {
+    gamepadHost.handlePacket({ type: 'gamepad:release', slot: validSlot })
+  }
 })
 
 // ─── Captura de Janelas e Telas (Desktop Capturer) ───────────────────────────
-ipcMain.handle('get-desktop-sources', async () => {
+ipcMain.handle('get-desktop-sources', async (event) => {
+  if (!isFromMainWindow(event)) return []
   try {
     const sources = await desktopCapturer.getSources({
       types: ['window', 'screen'],
@@ -387,43 +512,53 @@ ipcMain.handle('get-desktop-sources', async () => {
   }
 })
 
-ipcMain.handle('select-desktop-source', (_event, sourceId: string | null) => {
+ipcMain.handle('select-desktop-source', (event, sourceId: unknown) => {
+  if (!isFromMainWindow(event)) return false
+  if (sourceId === null) {
+    selectedDesktopSourceId = null
+    return true
+  }
+  if (typeof sourceId !== 'string' || !DESKTOP_SOURCE_ID_RE.test(sourceId)) {
+    return false
+  }
   selectedDesktopSourceId = sourceId
   return true
 })
 
 // ─── Global Shortcuts (Mute / Deafen) ────────────────────────────────────────
-interface RegisteredShortcuts {
-  toggleMute: string
-  toggleDeafen: string
-}
-
-ipcMain.on('register-global-shortcuts', (_event, shortcuts: RegisteredShortcuts) => {
+ipcMain.on('register-global-shortcuts', (event, rawShortcuts: unknown) => {
+  if (!isFromMainWindow(event)) return
   globalShortcut.unregisterAll()
+  if (!rawShortcuts || typeof rawShortcuts !== 'object' || Array.isArray(rawShortcuts)) return
 
-  if (shortcuts?.toggleMute && shortcuts.toggleMute.trim()) {
+  const shortcuts = rawShortcuts as Record<string, unknown>
+  const toggleMute = parseValidAccelerator(shortcuts.toggleMute)
+  const toggleDeafen = parseValidAccelerator(shortcuts.toggleDeafen)
+
+  if (toggleMute) {
     try {
-      globalShortcut.register(shortcuts.toggleMute.trim(), () => {
+      globalShortcut.register(toggleMute, () => {
         mainWindow?.webContents.send('shortcut-triggered', 'toggle-mute')
       })
     } catch (err) {
-      console.warn('[globalShortcut] Erro ao registrar mute:', shortcuts.toggleMute, err)
+      console.warn('[globalShortcut] Erro ao registrar mute:', toggleMute, err)
     }
   }
 
-  if (shortcuts?.toggleDeafen && shortcuts.toggleDeafen.trim()) {
+  if (toggleDeafen && toggleDeafen !== toggleMute) {
     try {
-      globalShortcut.register(shortcuts.toggleDeafen.trim(), () => {
+      globalShortcut.register(toggleDeafen, () => {
         mainWindow?.webContents.send('shortcut-triggered', 'toggle-deafen')
       })
     } catch (err) {
-      console.warn('[globalShortcut] Erro ao registrar deafen:', shortcuts.toggleDeafen, err)
+      console.warn('[globalShortcut] Erro ao registrar deafen:', toggleDeafen, err)
     }
   }
 })
 
 // ─── Auto-Update via electron-updater ─────────────────────────────────────────
-ipcMain.on('update:restart-and-install', () => {
+ipcMain.on('update:restart-and-install', (event) => {
+  if (!isFromMainWindow(event)) return
   autoUpdater.quitAndInstall()
 })
 
@@ -457,8 +592,9 @@ app.commandLine.appendSwitch('webrtc-max-cpu-consumption-percentage', '100')
 app.commandLine.appendSwitch('enable-features', 'WebRtcHideLocalIpsWithMdns,MediaSession')
 
 app.whenReady().then(() => {
-  // Tratamento completo de permissões de mídia (microfone, câmera, captura de tela)
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+  // Tratamento completo de permissões de mídia (somente para a origem local do app)
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (!isAllowedAppUrl(webContents.getURL())) return callback(false)
     const perm = permission as string
     if (
       perm === 'media' ||
@@ -473,7 +609,9 @@ app.whenReady().then(() => {
     callback(false)
   })
 
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    const checkUrl = requestingOrigin || webContents?.getURL() || ''
+    if (checkUrl && !isAllowedAppUrl(checkUrl)) return false
     const perm = permission as string
     if (
       perm === 'media' ||

@@ -28,6 +28,12 @@ import {
   randomRoomName,
   slugifyRoom,
 } from '../lib/utils'
+import {
+  MAX_ROOM_NAME_LENGTH,
+  MAX_USERNAME_LENGTH,
+  sanitizeRoomDisplayName,
+  sanitizeUsername,
+} from '../utils/sanitize'
 import type { ToastKind } from '../types'
 
 const NICK_KEY = 'discordia:nickname'
@@ -87,19 +93,20 @@ export function Lobby({ joining, onJoin, onToast }: LobbyProps) {
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
     if (!canJoin) return
-    const cleanNick = nickname.trim()
+    const cleanNick = sanitizeUsername(nickname)
     localStorage.setItem(NICK_KEY, cleanNick)
-    onJoin(cleanNick, slug, roomName.trim() || slug, roomPassword.trim() || undefined)
+    const displayName = sanitizeRoomDisplayName(roomName) || slug
+    onJoin(cleanNick, slug, displayName, roomPassword.trim() || undefined)
   }
 
   const handleSelectActiveRoom = (targetSlug: string, displayName: string) => {
-    const cleanNick = nickname.trim()
-    if (!cleanNick) {
+    if (!nickname.trim()) {
       onToast('warning', 'Digite seu apelido antes de entrar na sala.')
       return
     }
+    const cleanNick = sanitizeUsername(nickname)
     localStorage.setItem(NICK_KEY, cleanNick)
-    onJoin(cleanNick, targetSlug, displayName)
+    onJoin(cleanNick, targetSlug, sanitizeRoomDisplayName(displayName) || targetSlug)
   }
 
   return (
@@ -164,7 +171,7 @@ export function Lobby({ joining, onJoin, onToast }: LobbyProps) {
               className="dc-input"
               placeholder="Como seus amigos te chamam?"
               value={nickname}
-              maxLength={32}
+              maxLength={MAX_USERNAME_LENGTH}
               autoComplete="nickname"
               autoFocus={!nickname}
               onChange={(e) => setNickname(e.target.value)}
@@ -222,7 +229,7 @@ export function Lobby({ joining, onJoin, onToast }: LobbyProps) {
                       className="dc-input pl-7"
                       placeholder="sala-dos-amigos"
                       value={roomName}
-                      maxLength={48}
+                      maxLength={MAX_ROOM_NAME_LENGTH}
                       onChange={(e) => setRoomName(e.target.value)}
                     />
                   </div>

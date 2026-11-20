@@ -54,3 +54,4 @@ export function clearStoredRoomHash(roomId: string): void {
     /* noop */
   }
 }
+

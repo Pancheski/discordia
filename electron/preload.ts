@@ -39,16 +39,24 @@ const api: DiscordiaElectronAPI = {
   isElectron: true,
   platform: process.platform,
   sendGamepadState: (payload: unknown) => {
-    ipcRenderer.send('gamepad:state', payload)
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      ipcRenderer.send('gamepad:state', payload)
+    }
   },
   releaseGamepad: (slot?: number) => {
-    ipcRenderer.send('gamepad:release', slot)
+    if (slot === undefined || (typeof slot === 'number' && Number.isInteger(slot) && slot >= 1 && slot <= 4)) {
+      ipcRenderer.send('gamepad:release', slot)
+    }
   },
   connectGamepadSlot: (slot: number) => {
-    ipcRenderer.send('gamepad:connect', slot)
+    if (typeof slot === 'number' && Number.isInteger(slot) && slot >= 1 && slot <= 4) {
+      ipcRenderer.send('gamepad:connect', slot)
+    }
   },
   disconnectGamepadSlot: (slot: number) => {
-    ipcRenderer.send('gamepad:disconnect', slot)
+    if (typeof slot === 'number' && Number.isInteger(slot) && slot >= 1 && slot <= 4) {
+      ipcRenderer.send('gamepad:disconnect', slot)
+    }
   },
   minimizeWindow: () => {
     ipcRenderer.send('window:minimize')
@@ -64,6 +72,7 @@ const api: DiscordiaElectronAPI = {
     ipcRenderer.send('update:restart-and-install')
   },
   onUpdateAvailable: (callback) => {
+    if (typeof callback !== 'function') return () => {}
     const handler = (_event: unknown, info: { version?: string }) => callback(info)
     ipcRenderer.on('update-available', handler)
     return () => {
@@ -71,6 +80,7 @@ const api: DiscordiaElectronAPI = {
     }
   },
   onUpdateDownloaded: (callback) => {
+    if (typeof callback !== 'function') return () => {}
     const handler = (_event: unknown, info: { version?: string }) => callback(info)
     ipcRenderer.on('update-downloaded', handler)
     return () => {
@@ -79,9 +89,20 @@ const api: DiscordiaElectronAPI = {
   },
   // Global Shortcuts
   registerGlobalShortcuts: (shortcuts: KeybindShortcuts) => {
-    ipcRenderer.send('register-global-shortcuts', shortcuts)
+    if (
+      shortcuts &&
+      typeof shortcuts === 'object' &&
+      typeof shortcuts.toggleMute === 'string' &&
+      typeof shortcuts.toggleDeafen === 'string'
+    ) {
+      ipcRenderer.send('register-global-shortcuts', {
+        toggleMute: shortcuts.toggleMute.slice(0, 64),
+        toggleDeafen: shortcuts.toggleDeafen.slice(0, 64),
+      })
+    }
   },
   onShortcutTriggered: (callback) => {
+    if (typeof callback !== 'function') return () => {}
     const handler = (_event: unknown, action: 'toggle-mute' | 'toggle-deafen') => callback(action)
     ipcRenderer.on('shortcut-triggered', handler)
     return () => {
@@ -90,7 +111,10 @@ const api: DiscordiaElectronAPI = {
   },
   // Captura de Janelas e Telas (Desktop Capturer)
   getDesktopSources: () => ipcRenderer.invoke('get-desktop-sources'),
-  selectDesktopSource: (sourceId: string | null) => ipcRenderer.invoke('select-desktop-source', sourceId),
+  selectDesktopSource: (sourceId: string | null) => {
+    if (sourceId !== null && typeof sourceId !== 'string') return Promise.resolve(false)
+    return ipcRenderer.invoke('select-desktop-source', sourceId)
+  },
 }
 
 contextBridge.exposeInMainWorld('electron', api)

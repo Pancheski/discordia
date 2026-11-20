@@ -12,6 +12,7 @@ import {
 import { Avatar } from './Avatar'
 import { FileTransferCard } from './FileTransfer'
 import { useFileDrop } from '../hooks/useFileDrop'
+import { MAX_CHAT_MESSAGE_LENGTH, sanitizeUrl } from '../utils/sanitize'
 import type { ChatMessage, ChatSnapshot } from '../types'
 
 interface ChatSidebarProps {
@@ -26,7 +27,8 @@ interface ChatSidebarProps {
 }
 
 const URL_REGEX = /(https?:\/\/[^\s<>"']+)/gi
-const IMAGE_URL_REGEX = /\.(?:png|jpe?g|gif|webp|avif|svg)(?:\?[^\s]*)?$/i
+const IMAGE_URL_REGEX = /\.(?:png|jpe?g|gif|webp|avif)(?:\?[^\s]*)?$/i
+const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/
 
 function extractUrls(text: string): string[] {
   const matches = text.match(URL_REGEX)
@@ -34,12 +36,8 @@ function extractUrls(text: string): string[] {
   const unique = new Set<string>()
   for (const raw of matches) {
     const cleaned = raw.replace(/[.,;:!?)]+$/, '')
-    try {
-      const u = new URL(cleaned)
-      if (u.protocol === 'http:' || u.protocol === 'https:') unique.add(u.toString())
-    } catch {
-      /* ignore invalid URL */
-    }
+    const safe = sanitizeUrl(cleaned)
+    if (safe) unique.add(safe)
   }
   return [...unique].slice(0, 3)
 }
@@ -47,14 +45,21 @@ function extractUrls(text: string): string[] {
 function getYouTubeId(urlStr: string): string | null {
   try {
     const u = new URL(urlStr)
-    if (u.hostname === 'youtu.be') return u.pathname.slice(1).split('/')[0] || null
-    if (u.hostname.endsWith('youtube.com')) {
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    let candidate: string | null = null
+    if (u.hostname === 'youtu.be') {
+      candidate = u.pathname.slice(1).split('/')[0] || null
+    } else if (u.hostname === 'youtube.com' || u.hostname.endsWith('.youtube.com')) {
       const v = u.searchParams.get('v')
-      if (v) return v
-      const parts = u.pathname.split('/')
-      const idx = parts.findIndex((p) => p === 'shorts' || p === 'embed')
-      if (idx !== -1 && parts[idx + 1]) return parts[idx + 1]
+      if (v) {
+        candidate = v
+      } else {
+        const parts = u.pathname.split('/')
+        const idx = parts.findIndex((p) => p === 'shorts' || p === 'embed')
+        if (idx !== -1 && parts[idx + 1]) candidate = parts[idx + 1]
+      }
     }
+    return candidate && YOUTUBE_ID_RE.test(candidate) ? candidate : null
   } catch {
     /* ignore */
   }
@@ -194,7 +199,7 @@ export function ChatSidebar({
               onChange={(e) => setText(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={`Conversar em #${room}…`}
-              maxLength={4000}
+              maxLength={MAX_CHAT_MESSAGE_LENGTH}
               className="max-h-28 min-h-[24px] flex-1 resize-none bg-transparent text-sm text-dc-header outline-none placeholder:text-dc-faint"
             />
 
@@ -268,22 +273,25 @@ function FormattedText({ text }: { text: string }) {
     <div className="mt-0.5 space-y-1.5">
       <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-dc-text">
         {parts.map((part, i) => {
-          if ( i % 2 === 1 && /^https?:\/\//i.test(part)) {
-            const href = part.replace(/[.,;:!?)]+$/, '')
-            const trailing = part.slice(href.length)
-            return (
-              <span key={i}>
-                <a
-                  href={href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className=" break-all font-medium text-dc-brand-soft underline decoration-dc-brand-soft/40 underline-offset-2 hover:text-white hover:decoration-white"
-                >
-                  {href}
-                </a>
-                {trailing}
-              </span>
-            )
+          if (i % 2 === 1 && /^https?:\/\//i.test(part)) {
+            const rawHref = part.replace(/[.,;:!?)]+$/, '')
+            const safeHref = sanitizeUrl(rawHref)
+            if (safeHref) {
+              const trailing = part.slice(rawHref.length)
+              return (
+                <span key={i}>
+                  <a
+                    href={safeHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className=" break-all font-medium text-dc-brand-soft underline decoration-dc-brand-soft/40 underline-offset-2 hover:text-white hover:decoration-white"
+                  >
+                    {rawHref}
+                  </a>
+                  {trailing}
+                </span>
+              )
+            }
           }
           return <span key={i}>{part}</span>
         })}
@@ -297,30 +305,32 @@ function FormattedText({ text }: { text: string }) {
 }
 
 function LinkPreview({ url }: { url: string }) {
-  const ytId = getYouTubeId(url)
+  const safeUrl = sanitizeUrl(url)
+  if (!safeUrl) return null
+  const ytId = getYouTubeId(safeUrl)
   let hostname = ''
   try {
-    hostname = new URL(url).hostname.replace(/^www\./, '')
+    hostname = new URL(safeUrl).hostname.replace(/^www\./, '')
   } catch {
     return null
   }
 
-  if (IMAGE_URL_REGEX.test(url)) {
+  if (IMAGE_URL_REGEX.test(safeUrl)) {
     return (
       <a
-        href={url}
+        href={safeUrl}
         target="_blank"
         rel="noopener noreferrer"
         className="block max-w-xs overflow-hidden rounded-lg border border-white/10 bg-black/30"
       >
-        <img src={url} alt={hostname} loading="lazy" className="max-h-48 w-full object-contain" />
+        <img src={safeUrl} alt={hostname} loading="lazy" className="max-h-48 w-full object-contain" />
       </a>
     )
   }
 
   return (
     <a
-      href={url}
+      href={safeUrl}
       target="_blank"
       rel="noopener noreferrer"
       className="flex flex-col overflow-hidden rounded-lg border border-l-4 border-white/10 border-l-dc-brand bg-dc-darkest/80 transition hover:bg-dc-darkest"
@@ -337,7 +347,7 @@ function LinkPreview({ url }: { url: string }) {
         <Globe size={14} className="shrink-0 text-dc-brand-soft" />
         <div className="min-w-0 flex-1">
           <p className="font-semibold text-dc-header">{ytId ? 'YouTube · Vídeo' : hostname}</p>
-          <p className="truncate text-[11px] text-dc-muted">{url}</p>
+          <p className="truncate text-[11px] text-dc-muted">{safeUrl}</p>
         </div>
         <ExternalLink size={13} className="shrink-0 text-dc-muted" />
       </div>

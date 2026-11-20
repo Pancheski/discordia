@@ -45,7 +45,8 @@ export function FileTransferCard({ transfer, onCancel, onSave }: FileTransferCar
       : status === 'done'
         ? 100
         : 0
-  const isImage = (isImageMime(file.mime) || /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i.test(file.name)) && !!url && status === 'done'
+  const isSvg = file.mime === 'image/svg+xml' || /\.svg$/i.test(file.name)
+  const isImage = !isSvg && (isImageMime(file.mime) || /\.(png|jpe?g|gif|webp|avif|bmp)$/i.test(file.name)) && !!url && status === 'done'
   const active = status === 'pending' || status === 'transferring'
 
   return (

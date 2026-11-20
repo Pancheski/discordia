@@ -552,7 +552,7 @@ export function MiniGolfGame({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     renderer.shadowMap.enabled = true
     renderer.shadowMap.type = THREE.PCFSoftShadowMap
-    container.innerHTML = ''
+    container.replaceChildren()
     container.appendChild(renderer.domElement)
 
     // ─── Iluminação Vívida e Clara ───────────────────────────────────────────

@@ -1,19 +1,14 @@
+import { sanitizeRoomSlug, sanitizeUsername } from '../utils/sanitize'
+
 /** Prefixo global usado nos IDs do servidor público do PeerJS (evita colisão com outros apps). */
 export const APP_PREFIX = 'discordia-v1'
 
 /** Limite de participantes por sala (mesh completo: n*(n-1) conexões). */
 export const MAX_PEERS = 6
 
-/** Normaliza o nome da sala para um slug seguro para IDs PeerJS e URLs. */
+/** Normaliza o nome da sala para um slug seguro para IDs PeerJS e URLs (máx. 32 chars). */
 export function slugifyRoom(input: string): string {
-  return input
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48)
+  return sanitizeRoomSlug(input)
 }
 
 /** Gera ou recupera um ID único de sessão para a aba atual no sessionStorage */
@@ -101,9 +96,7 @@ export function clamp(value: number, min = 0, max = 1): number {
 }
 
 export function sanitizeName(value: unknown): string {
-  if (typeof value !== 'string') return 'Anônimo'
-  const clean = value.replace(/[\u0000-\u001f]/g, '').trim().slice(0, 32)
-  return clean || 'Anônimo'
+  return sanitizeUsername(value)
 }
 
 export async function copyToClipboard(text: string): Promise<boolean> {

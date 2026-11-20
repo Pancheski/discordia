@@ -9,6 +9,7 @@ import {
   update,
 } from 'firebase/database'
 import type { Database } from 'firebase/database'
+import { MAX_ROOM_NAME_LENGTH, sanitizeRoomDisplayName, sanitizeUsername } from '../utils/sanitize'
 
 /**
  * PRESENÇA E SINALIZAÇÃO DE SALAS (Firebase Realtime Database + Fallback Local)
@@ -106,7 +107,7 @@ interface RawRoom {
 
 type RawTree = Record<string, RawRoom | null> | null
 
-const ROOM_ID_RE = /^[a-z0-9-]{1,48}$/
+const ROOM_ID_RE = /^[a-z0-9-]{1,32}$/
 const KEY_RE = /^[A-Za-z0-9_-]{1,96}$/
 const HASH_RE = /^[a-f0-9]{64}$/
 
@@ -115,8 +116,8 @@ function num(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
-function str(value: unknown, max = 48): string {
-  return typeof value === 'string' ? value.replace(/\p{Cc}/gu, '').trim().slice(0, max) : ''
+function str(value: unknown, max = MAX_ROOM_NAME_LENGTH): string {
+  return sanitizeRoomDisplayName(value).slice(0, max)
 }
 
 function readPasswordHash(room: RawRoom | null | undefined): string | null {
@@ -213,7 +214,7 @@ export function normalizeRoomMembers(
     const joinedAt = num(m.joined_at) || lastSeen || now
     list.push({
       id,
-      name: str(m.name, 32) || 'Anônimo',
+      name: sanitizeUsername(m.name),
       joinedAt,
       lastSeen: lastSeen || now,
       hasCamera: Boolean(m.has_camera),
@@ -321,7 +322,7 @@ class FirebasePresence implements PresenceProvider {
   async heartbeat(roomId: string, roomName: string | undefined, member: PresenceMember, count?: number): Promise<void> {
     if (!ROOM_ID_RE.test(roomId) || !KEY_RE.test(member.id)) return
     const now = Date.now()
-    const cleanName = str(member.name, 32) || 'Anônimo'
+    const cleanName = sanitizeUsername(member.name)
     const joinedAt = member.joinedAt ?? now
     const disconnectKey = `${roomId}/${member.id}`
 
@@ -508,7 +509,7 @@ class LocalPresence implements PresenceProvider {
     const nextMembers: Record<string, RawMember | null> = {
       ...(room.members ?? {}),
       [member.id]: {
-        name: str(member.name, 32),
+        name: sanitizeUsername(member.name),
         last_seen: now,
         joined_at: member.joinedAt ?? now,
         has_camera: Boolean(member.hasCamera),

@@ -46,3 +46,9 @@ venv/
 !.env.example
 *serviceAccount*.json
 *firebase-adminsdk*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+secrets.*
