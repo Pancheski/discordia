@@ -24,6 +24,9 @@
         "passwordHash": {
           ".validate": "newData.isString() && newData.val().matches(/^[a-f0-9]{64}$/)"
         },
+        "ownerId": {
+          ".validate": "newData.isString() && newData.val().matches(/^[A-Za-z0-9_-]{1,96}$/)"
+        },
         "members": {
           "$peerId": {
             ".validate": "$peerId.matches(/^[A-Za-z0-9_-]{1,96}$/) && newData.hasChildren(['name', 'last_seen'])",
@@ -51,3 +54,4 @@
     }
   }
 }
+

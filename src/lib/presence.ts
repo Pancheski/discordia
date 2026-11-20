@@ -85,6 +85,15 @@ export interface PresenceProvider {
   getRoomSecurity(roomId: string): Promise<RoomSecurityMeta>
   /** Grava (ou limpa, com `null`) o hash da senha da sala. */
   setRoomPassword(roomId: string, roomName: string | undefined, passwordHash: string | null): Promise<void>
+  /**
+   * Define `ownerId` da sala caso ainda não exista um dono ativo em `members`.
+   * Retorna o `ownerId` efetivo da sala.
+   */
+  claimRoomOwner(roomId: string, peerId: string): Promise<string | null>
+  /** Escuta em tempo real o campo `ownerId` da sala. */
+  watchRoomOwner(roomId: string, callback: (ownerId: string | null) => void): () => void
+  /** Remove imediatamente o membro alvo de `discordia_rooms/${roomId}/members/${targetPeerId}`. */
+  kickMember(roomId: string, targetPeerId: string): Promise<void>
 }
 
 // ─── Modelo bruto + normalização ───────────────────────────────────────
@@ -102,6 +111,7 @@ interface RawRoom {
   last_seen?: unknown
   hasPassword?: unknown
   passwordHash?: unknown
+  ownerId?: unknown
   members?: Record<string, RawMember | null> | null
 }
 
@@ -444,6 +454,80 @@ class FirebasePresence implements PresenceProvider {
     })
     if (!res.ok) throw new Error(`Firebase respondeu ${res.status}`)
   }
+
+  async claimRoomOwner(roomId: string, peerId: string): Promise<string | null> {
+    if (!ROOM_ID_RE.test(roomId) || !KEY_RE.test(peerId)) return null
+    try {
+      const res = await fetch(this.url(roomId), { cache: 'no-store' })
+      if (res.ok) {
+        const room = (await res.json()) as RawRoom | null
+        const existingOwner = typeof room?.ownerId === 'string' && KEY_RE.test(room.ownerId) ? room.ownerId : null
+        const activeMembers = normalizeRoomMembers(room?.members)
+        const ownerStillPresent = existingOwner !== null && activeMembers.some((m) => m.id === existingOwner)
+        if (existingOwner && ownerStillPresent) {
+          return existingOwner
+        }
+      }
+      if (this.db) {
+        await update(ref(this.db, `${this.root}/${roomId}`), {
+          ownerId: peerId,
+          last_seen: serverTimestamp(),
+        })
+      } else {
+        await fetch(this.url(roomId), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ownerId: peerId, last_seen: { '.sv': 'timestamp' } }),
+        })
+      }
+      return peerId
+    } catch (err) {
+      console.warn('[Firebase] Falha ao reivindicar ownerId da sala:', err)
+      return null
+    }
+  }
+
+  watchRoomOwner(roomId: string, callback: (ownerId: string | null) => void): () => void {
+    if (!ROOM_ID_RE.test(roomId)) return () => {}
+    if (this.db) {
+      const ownerRef = ref(this.db, `${this.root}/${roomId}/ownerId`)
+      const unsubscribe = onValue(
+        ownerRef,
+        (snapshot) => {
+          const val = snapshot.val()
+          callback(typeof val === 'string' && KEY_RE.test(val) ? val : null)
+        },
+        (err) => console.warn('[Firebase] Erro no onValue de ownerId:', err),
+      )
+      return () => unsubscribe()
+    }
+    let disposed = false
+    const poll = () => {
+      if (disposed) return
+      void fetch(this.url(`${roomId}/ownerId`), { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((val) => {
+          if (!disposed) callback(typeof val === 'string' && KEY_RE.test(val) ? val : null)
+        })
+        .catch(() => undefined)
+    }
+    poll()
+    const timer = window.setInterval(poll, 4000)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }
+
+  async kickMember(roomId: string, targetPeerId: string): Promise<void> {
+    if (!ROOM_ID_RE.test(roomId) || !KEY_RE.test(targetPeerId)) return
+    if (this.db) {
+      await remove(ref(this.db, `${this.root}/${roomId}/members/${targetPeerId}`)).catch(() => undefined)
+    }
+    await fetch(this.url(`${roomId}/members/${targetPeerId}`), { method: 'DELETE', keepalive: true }).catch(
+      () => undefined,
+    )
+  }
 }
 
 // ─── Mock local (localStorage) ─────────────────────────────────────────
@@ -575,6 +659,48 @@ class LocalPresence implements PresenceProvider {
     }
     this.write(tree)
   }
+
+  async claimRoomOwner(roomId: string, peerId: string): Promise<string | null> {
+    if (!ROOM_ID_RE.test(roomId) || !KEY_RE.test(peerId)) return null
+    const tree = this.read()
+    const room = tree[roomId] ?? {}
+    const existingOwner = typeof room.ownerId === 'string' && KEY_RE.test(room.ownerId) ? room.ownerId : null
+    const activeMembers = normalizeRoomMembers(room.members)
+    if (existingOwner && activeMembers.some((m) => m.id === existingOwner)) {
+      return existingOwner
+    }
+    tree[roomId] = { ...room, ownerId: peerId, last_seen: Date.now() }
+    this.write(tree)
+    return peerId
+  }
+
+  watchRoomOwner(roomId: string, callback: (ownerId: string | null) => void): () => void {
+    if (!ROOM_ID_RE.test(roomId)) return () => {}
+    const emit = () => {
+      const val = this.read()[roomId]?.ownerId
+      callback(typeof val === 'string' && KEY_RE.test(val) ? val : null)
+    }
+    emit()
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === LOCAL_KEY) emit()
+    }
+    window.addEventListener('storage', onStorage)
+    const timer = window.setInterval(emit, 2500)
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      window.clearInterval(timer)
+    }
+  }
+
+  async kickMember(roomId: string, targetPeerId: string): Promise<void> {
+    if (!ROOM_ID_RE.test(roomId) || !KEY_RE.test(targetPeerId)) return
+    const tree = this.read()
+    const room = tree[roomId]
+    if (!room?.members) return
+    delete room.members[targetPeerId]
+    room.count = normalizeRoomMembers(room.members).length
+    this.write(tree)
+  }
 }
 
 // ─── Desativado ────────────────────────────────────────────────────────
@@ -597,6 +723,13 @@ class NoopPresence implements PresenceProvider {
     return { active: false, online: 0, hasPassword: false, passwordHash: null }
   }
   async setRoomPassword(): Promise<void> {}
+  async claimRoomOwner(_roomId: string, peerId: string): Promise<string | null> {
+    return peerId
+  }
+  watchRoomOwner(): () => void {
+    return () => {}
+  }
+  async kickMember(): Promise<void> {}
 }
 
 // ─── Fábrica (configurada via .env com fallbacks universais) ───────────

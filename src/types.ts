@@ -50,6 +50,8 @@ export interface LocalState {
 export interface RoomSnapshot {
   status: RoomStatus
   room: string
+  /** peerId do dono/criador atual da sala (autorizado a expulsar participantes) */
+  ownerId: string | null
   local: LocalState
   participants: RemoteParticipant[]
   /** Mapa explícito e isolado apenas com as faixas de áudio de voz (microfone) por peerId */
@@ -86,6 +88,7 @@ export type PeerMessage =
   | { type: 'camera:stop'; peerId: string }
   | { type: 'camera:request-stream'; fromPeerId: string; toPeerId: string }
   | { type: 'bye' }
+  | { type: 'kick' }
   | { type: 'chat'; id: string; text: string; ts: number }
   | { type: 'file-offer'; id: string; ts: number; file: FileMeta }
   | { type: 'file-cancel'; id: string }

@@ -1,13 +1,30 @@
-import { AudioWaveform, Check, Copy, Hash, Mic, MicOff, MonitorUp, Swords, Volume2, VolumeX, X } from 'lucide-react'
+import {
+  AudioWaveform,
+  Check,
+  Copy,
+  Crown,
+  Hash,
+  Mic,
+  MicOff,
+  MonitorUp,
+  MoreVertical,
+  Swords,
+  Volume2,
+  VolumeX,
+  X,
+} from 'lucide-react'
 import { useState } from 'react'
+import type { MouseEvent } from 'react'
 import { Avatar } from './Avatar'
-import { VolumeSlider } from './VolumeSlider'
+import { ParticipantMenu } from './ParticipantMenu'
+import type { ParticipantMenuAnchor } from './ParticipantMenu'
 import { useAudioSystem } from '../hooks/useAudioSystem'
 import { MAX_PEERS } from '../lib/utils'
 import type { LocalState, MediaKind, PeerConnectionState, RemoteParticipant } from '../types'
 
 interface SidebarProps {
   room: string
+  ownerId: string | null
   local: LocalState
   participants: RemoteParticipant[]
   open: boolean
@@ -16,10 +33,17 @@ interface SidebarProps {
   onVolume: (peerId: string, kind: MediaKind, value: number) => void
   onToggleMute: () => void
   onChallengeRps: (peerId: string) => void
+  onKickParticipant: (peerId: string) => void
+}
+
+interface ActiveMenuState {
+  peerId: string
+  anchor: ParticipantMenuAnchor
 }
 
 export function Sidebar({
   room,
+  ownerId,
   local,
   participants,
   open,
@@ -28,16 +52,35 @@ export function Sidebar({
   onVolume,
   onToggleMute,
   onChallengeRps,
+  onKickParticipant,
 }: SidebarProps) {
   const [copied, setCopied] = useState(false)
+  const [activeMenu, setActiveMenu] = useState<ActiveMenuState | null>(null)
   const { sfxVolume, sfxMuted, setSfxVolume, toggleSfxMute } = useAudioSystem()
   const total = participants.length + 1
+  const isLocalOwner = Boolean(ownerId && local.peerId && ownerId === local.peerId)
+  const menuParticipant = activeMenu ? participants.find((p) => p.peerId === activeMenu.peerId) ?? null : null
 
   const handleCopy = async () => {
     if (await onCopyLink()) {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1800)
     }
+  }
+
+  const openMenuFromButton = (e: MouseEvent<HTMLButtonElement>, peerId: string) => {
+    e.stopPropagation()
+    if (activeMenu?.peerId === peerId) {
+      setActiveMenu(null)
+      return
+    }
+    const rect = e.currentTarget.getBoundingClientRect()
+    setActiveMenu({ peerId, anchor: { x: rect.right + 6, y: rect.top } })
+  }
+
+  const openMenuFromContext = (e: MouseEvent<HTMLLIElement>, peerId: string) => {
+    e.preventDefault()
+    setActiveMenu({ peerId, anchor: { x: e.clientX, y: e.clientY } })
   }
 
   return (
@@ -98,64 +141,84 @@ export function Sidebar({
               <div className="flex items-center gap-2.5">
                 <Avatar name={local.name} size={32} speaking={local.speaking} />
                 <div className="min-w-0 flex-1 leading-tight">
-                  <p className={`truncate text-sm font-medium ${local.speaking ? 'text-dc-header' : 'text-dc-text'}`}>
-                    {local.name} <span className="text-dc-muted">(você)</span>
-                  </p>
+                  <div className="flex items-center gap-1">
+                    <p className={`truncate text-sm font-medium ${local.speaking ? 'text-dc-header' : 'text-dc-text'}`}>
+                      {local.name} <span className="text-dc-muted">(você)</span>
+                    </p>
+                    {isLocalOwner && (
+                      <Crown size={12} className="shrink-0 text-amber-400" aria-label="Dono da sala" />
+                    )}
+                  </div>
                   {!local.micAvailable && (
                     <p className="truncate text-[10px] font-medium text-amber-400">
                       Microfone desativado ou não detectado
                     </p>
                   )}
                 </div>
-                {local.screenStream && <LiveBadge />}
-                {local.muted && <MicOff size={15} className="text-dc-red" />}
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {local.screenStream && <LiveIndicator />}
+                  {local.muted && <MicOff size={15} className="text-dc-red" />}
+                </div>
               </div>
             </li>
 
-            {participants.map((p) => (
-              <li key={p.peerId} className="rounded-md px-2 py-2 transition hover:bg-dc-hover/50">
-                <div className="flex items-center gap-2.5">
-                  <Avatar name={p.name} size={32} speaking={p.speaking} />
-                  <div className="min-w-0 flex-1 leading-tight">
-                    <p className={`truncate text-sm font-medium ${p.speaking ? 'text-dc-header' : 'text-dc-text'}`}>
-                      {p.name}
-                    </p>
-                    <PeerStatusLabel state={p.connectionState} />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onChallengeRps(p.peerId)}
-                    className="rounded p-1 text-dc-muted transition hover:bg-dc-brand hover:text-white"
-                    title={`Desafiar ${p.name} para Pedra, Papel e Tesoura`}
-                    aria-label={`Desafiar ${p.name} para Pedra, Papel e Tesoura`}
-                  >
-                    <Swords size={14} />
-                  </button>
-                  {p.sharing && <LiveBadge />}
-                  {p.muted && <MicOff size={15} className="text-dc-red" />}
-                </div>
-                <div className="mt-1.5 space-y-1 pl-[2.6rem]">
-                  <VolumeSlider
-                    id={`voice-volume-${p.peerId}`}
-                    value={p.voiceVolume}
-                    onChange={(v) => onVolume(p.peerId, 'mic', v)}
-                    label={`Voz de ${p.name}`}
-                  />
-                  {p.screenStream && (
-                    <div className="flex items-center gap-1">
-                      <MonitorUp size={12} className="shrink-0 text-dc-faint" />
-                      <VolumeSlider
-                        id={`screen-volume-side-${p.peerId}`}
-                        value={p.screenVolume}
-                        onChange={(v) => onVolume(p.peerId, 'screen', v)}
-                        label={`Áudio da tela de ${p.name}`}
-                        className="flex-1"
-                      />
+            {participants.map((p) => {
+              const isPeerOwner = Boolean(ownerId && p.peerId === ownerId)
+              const isMenuOpen = activeMenu?.peerId === p.peerId
+              return (
+                <li
+                  key={p.peerId}
+                  onContextMenu={(e) => openMenuFromContext(e, p.peerId)}
+                  className={`group rounded-md px-2 py-1.5 transition ${
+                    isMenuOpen ? 'bg-dc-hover/80' : 'hover:bg-dc-hover/50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Avatar name={p.name} size={32} speaking={p.speaking} />
+                    <div className="min-w-0 flex-1 leading-tight">
+                      <div className="flex items-center gap-1">
+                        <p className={`truncate text-sm font-medium ${p.speaking ? 'text-dc-header' : 'text-dc-text'}`}>
+                          {p.name}
+                        </p>
+                        {isPeerOwner && (
+                          <Crown size={12} className="shrink-0 text-amber-400" aria-label="Dono da sala" />
+                        )}
+                      </div>
+                      <PeerStatusLabel state={p.connectionState} />
                     </div>
-                  )}
-                </div>
-              </li>
-            ))}
+
+                    <div className="flex shrink-0 items-center gap-1">
+                      {p.sharing && <LiveIndicator />}
+                      {p.muted && <MicOff size={14} className="text-dc-red" />}
+                      <button
+                        type="button"
+                        onClick={() => onChallengeRps(p.peerId)}
+                        className="rounded p-1 text-dc-muted opacity-70 transition hover:bg-dc-brand hover:text-white group-hover:opacity-100"
+                        title={`Desafiar ${p.name} para Pedra, Papel e Tesoura`}
+                        aria-label={`Desafiar ${p.name} para Pedra, Papel e Tesoura`}
+                      >
+                        <Swords size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => openMenuFromButton(e, p.peerId)}
+                        className={`rounded p-1 transition ${
+                          isMenuOpen
+                            ? 'bg-dc-brand text-white'
+                            : 'text-dc-muted hover:bg-white/10 hover:text-dc-header'
+                        }`}
+                        title={`Opções de ${p.name} (ou clique com o botão direito)`}
+                        aria-label={`Opções de ${p.name}`}
+                        aria-haspopup="menu"
+                        aria-expanded={isMenuOpen}
+                      >
+                        <MoreVertical size={15} />
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              )
+            })}
           </ul>
 
           {participants.length === 0 && (
@@ -223,6 +286,23 @@ export function Sidebar({
           </button>
         </footer>
       </aside>
+
+      {menuParticipant && activeMenu && (
+        <ParticipantMenu
+          open
+          anchor={activeMenu.anchor}
+          peerId={menuParticipant.peerId}
+          name={menuParticipant.name}
+          voiceVolume={menuParticipant.voiceVolume}
+          onVoiceVolumeChange={(v) => onVolume(menuParticipant.peerId, 'mic', v)}
+          isSharingScreen={Boolean(menuParticipant.sharing || menuParticipant.screenStream)}
+          screenVolume={menuParticipant.screenVolume}
+          onScreenVolumeChange={(v) => onVolume(menuParticipant.peerId, 'screen', v)}
+          canKick={isLocalOwner}
+          onKick={() => onKickParticipant(menuParticipant.peerId)}
+          onClose={() => setActiveMenu(null)}
+        />
+      )}
     </>
   )
 }
@@ -252,8 +332,14 @@ function PeerStatusLabel({ state }: { state: PeerConnectionState }) {
   )
 }
 
-function LiveBadge() {
+function LiveIndicator() {
   return (
-    <span className="rounded bg-dc-red px-1 py-px text-[9px] font-bold uppercase tracking-wider text-white">Ao vivo</span>
+    <span
+      className="inline-flex items-center gap-1 rounded bg-dc-red/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-rose-300 ring-1 ring-dc-red/40"
+      title="Transmitindo tela"
+    >
+      <MonitorUp size={10} className="shrink-0" />
+      <span className="h-1.5 w-1.5 rounded-full bg-dc-red animate-pulse" />
+    </span>
   )
 }

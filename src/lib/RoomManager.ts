@@ -106,6 +106,7 @@ export interface RoomManagerCallbacks {
   onChange: (snapshot: RoomSnapshot) => void
   onToast: (kind: ToastKind, message: string) => void
   onChat: (snapshot: ChatSnapshot) => void
+  onKicked?: () => void
   onRpsChange: (duel: RpsDuelState | null) => void
   onTrioChange: (state: TrioGameState | null) => void
   onActiveAppChange: (appId: AppActivityId) => void
@@ -183,6 +184,10 @@ export class RoomManager {
   private driverReady = typeof window !== 'undefined' && Boolean(window.electron?.isElectron)
   private installingDriver = false
   private companionRetryTimer: number | null = null
+  private ownerId: string | null = null
+  private ownerUnsub: (() => void) | null = null
+  private hasSeenSelfInPresence = false
+  private kickedOut = false
   private readonly activePresencePeerIds = new Set<string>()
   private readonly sentCustomSfxByPeer = new Map<string, Set<string>>()
   private local: LocalState = {
@@ -311,10 +316,22 @@ export class RoomManager {
         { id: this.local.peerId, name: this.local.name, joinedAt: this.joinedAt, hasCamera: Boolean(this.cameraStream) },
         1,
       )
+      this.hasSeenSelfInPresence = true
     } catch (err) {
       console.warn('[WebRTC] Falha ao registrar presença inicial:', err)
     }
     if (this.destroyed) return false
+
+    // Identifica ou reivindica o dono/criador da sala (`ownerId`) no Firebase
+    this.ownerId = await presence.claimRoomOwner(this.room, this.local.peerId)
+    if (this.destroyed) return false
+    this.ownerUnsub = presence.watchRoomOwner(this.room, (nextOwnerId) => {
+      if (this.destroyed) return
+      if (this.ownerId !== nextOwnerId) {
+        this.ownerId = nextOwnerId
+        this.emit()
+      }
+    })
 
     // Escuta em tempo real `discordia_rooms/${roomId}/members` via Firebase onValue
     this.presenceUnsub = presence.watchRoomMembers(this.room, (members) => {
@@ -1416,6 +1433,47 @@ export class RoomManager {
     })
   }
 
+  /** Expulsa um participante da sala (exclusivo do dono `ownerId`). */
+  async kickParticipant(targetPeerId: string): Promise<void> {
+    if (this.destroyed || !this.room) return
+    if (!this.ownerId || this.ownerId !== this.local.peerId) {
+      this.toast('error', 'Apenas o criador da sala pode expulsar participantes.')
+      return
+    }
+    if (!targetPeerId || targetPeerId === this.local.peerId) return
+
+    const link = this.links.get(targetPeerId)
+    const targetName = link?.info.name || 'Participante'
+
+    // 1) Envia sinal direto `{ type: 'kick' }` pelo DataChannel antes de encerrar
+    if (link?.data?.open) {
+      this.send(link.data, { type: 'kick' })
+    }
+
+    // 2) Remove imediatamente do nó `members` no Firebase
+    this.activePresencePeerIds.delete(targetPeerId)
+    try {
+      await getPresence().kickMember(this.room, targetPeerId)
+    } catch (err) {
+      console.warn('[Moderação] Falha ao remover membro expulso no Firebase:', err)
+    }
+
+    // 3) Encerra todas as conexões P2P locais com o alvo
+    if (link) {
+      window.setTimeout(() => {
+        if (!this.destroyed) this.removeLink(targetPeerId, true)
+      }, 120)
+    }
+    this.toast('info', `${targetName} foi removido da sala.`)
+  }
+
+  private handleKicked(): void {
+    if (this.destroyed || this.kickedOut) return
+    this.kickedOut = true
+    this.leave()
+    this.cb.onKicked?.()
+  }
+
   leave(): void {
     if (this.destroyed) return
     this.destroyed = true
@@ -1425,7 +1483,12 @@ export class RoomManager {
       this.presenceUnsub()
       this.presenceUnsub = null
     }
-    if (this.room && this.local.peerId) {
+    if (this.ownerUnsub) {
+      this.ownerUnsub()
+      this.ownerUnsub = null
+    }
+    this.hasSeenSelfInPresence = false
+    if (this.room && this.local.peerId && !this.kickedOut) {
       const remainingPeers = [...this.links.values()].filter((l) => l.visible || l.greeted).length
       getPresence().leave(this.room, this.local.peerId, remainingPeers === 0)
     }
@@ -1845,6 +1908,20 @@ export class RoomManager {
     if (this.destroyed || !peer || peer.destroyed) return
     if (peer.disconnected) {
       this.scheduleReconnect()
+      return
+    }
+
+    const selfInFirebase = members.some((m) => m.id === this.local.peerId)
+    if (selfInFirebase) {
+      this.hasSeenSelfInPresence = true
+    } else if (
+      this.hasSeenSelfInPresence &&
+      Date.now() - this.joinedAt > 3000 &&
+      members.length > 0 &&
+      getPresence().kind !== 'off'
+    ) {
+      // Detectou remoção do nó `members` no Firebase -> usuário foi expulso
+      this.handleKicked()
       return
     }
 
@@ -2463,6 +2540,13 @@ export class RoomManager {
       }
       case 'bye': {
         this.removeLink(id, true)
+        return
+      }
+      case 'kick': {
+        // Somente o dono/criador da sala pode disparar expulsão
+        if (this.ownerId !== null && id === this.ownerId) {
+          this.handleKicked()
+        }
         return
       }
       case 'chat':
@@ -3505,6 +3589,7 @@ export class RoomManager {
     this.cb.onChange({
       status: this.status,
       room: this.room,
+      ownerId: this.ownerId,
       local: {
         ...this.local,
         screenStream: this.screenStream,

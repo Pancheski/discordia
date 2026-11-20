@@ -45,7 +45,7 @@ interface RoomViewProps {
 }
 
 export function RoomView({ snapshot, controller }: RoomViewProps) {
-  const { local, participants, room, voiceStreams, screenStreams, localCameraStream, cameraStreams } = snapshot
+  const { local, participants, room, ownerId, voiceStreams, screenStreams, localCameraStream, cameraStreams } = snapshot
   const {
     toggleMute,
     toggleDeafen,
@@ -57,6 +57,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     setScreenPreset,
     requestScreenStream,
     leave,
+    kickParticipant,
     setVolume,
     pushToast,
     chat,
@@ -240,6 +241,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
         micAvailable: local.micAvailable,
         connectionState: 'connected' as const,
         voiceVolume: 1,
+        screenVolume: 1,
         screenId: local.screenStream ? 'local' : null,
       },
       ...participants.map((p) => {
@@ -257,6 +259,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           micAvailable: true,
           connectionState: p.connectionState,
           voiceVolume: p.voiceVolume,
+          screenVolume: p.screenVolume,
           screenId: hasScreen ? p.peerId : null,
         }
       }),
@@ -496,10 +499,13 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           ? 'Mini Golf'
           : ''
 
+  const isLocalOwner = Boolean(ownerId && local.peerId && ownerId === local.peerId)
+
   return (
     <div className="flex h-full overflow-hidden bg-dc-dark text-dc-text">
       <Sidebar
         room={room}
+        ownerId={ownerId}
         local={local}
         participants={participants}
         open={sidebarOpen}
@@ -508,6 +514,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
         onVolume={setVolume}
         onToggleMute={toggleMute}
         onChallengeRps={challengeRps}
+        onKickParticipant={kickParticipant}
       />
 
       <main className="relative flex min-w-0 flex-1 flex-col">
@@ -742,9 +749,21 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                       connectionState={spotlightTile.connectionState}
                       spotlight
                       voiceVolume={spotlightTile.voiceVolume}
+                      screenVolume={spotlightTile.screenVolume}
                       onVoiceVolumeChange={
                         !spotlightTile.isLocal && spotlightTile.peerId
                           ? (v) => setVolume(spotlightTile.peerId, 'mic', v)
+                          : undefined
+                      }
+                      onScreenVolumeChange={
+                        !spotlightTile.isLocal && spotlightTile.peerId
+                          ? (v) => setVolume(spotlightTile.peerId, 'screen', v)
+                          : undefined
+                      }
+                      canKick={isLocalOwner && !spotlightTile.isLocal}
+                      onKick={
+                        isLocalOwner && !spotlightTile.isLocal && spotlightTile.peerId
+                          ? () => kickParticipant(spotlightTile.peerId)
                           : undefined
                       }
                       onWatchScreen={
@@ -837,13 +856,17 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                   ))}
                 {tiles
                   .filter((t) => !(showingSpotlightOnStage && spotlightTile?.key === t.key))
-                  .map(({ key, screenId, voiceVolume, ...t }) => (
+                  .map(({ key, screenId, voiceVolume, screenVolume, ...t }) => (
                     <ParticipantTile
                       key={key}
                       {...t}
                       compact
                       voiceVolume={voiceVolume}
+                      screenVolume={screenVolume}
                       onVoiceVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'mic', v) : undefined}
+                      onScreenVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'screen', v) : undefined}
+                      canKick={isLocalOwner && !t.isLocal}
+                      onKick={isLocalOwner && !t.isLocal && t.peerId ? () => kickParticipant(t.peerId) : undefined}
                       onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
                       isWatchingScreen={Boolean(screenId && watchedScreen?.id === screenId && showingScreenOnStage)}
                       onChallengeRps={challengeRps}
@@ -856,7 +879,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
             <div className="flex h-full w-full min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
               {tiles.length === 1 ? (
                 (() => {
-                  const { key, screenId, voiceVolume, ...t } = tiles[0]
+                  const { key, screenId, voiceVolume, screenVolume, ...t } = tiles[0]
                   return (
                     <div className="flex w-full max-w-2xl items-center justify-center my-auto">
                       <div className="w-full max-w-2xl aspect-video">
@@ -864,9 +887,15 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                           key={key}
                           {...t}
                           voiceVolume={voiceVolume}
+                          screenVolume={screenVolume}
                           onVoiceVolumeChange={
                             !t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'mic', v) : undefined
                           }
+                          onScreenVolumeChange={
+                            !t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'screen', v) : undefined
+                          }
+                          canKick={isLocalOwner && !t.isLocal}
+                          onKick={isLocalOwner && !t.isLocal && t.peerId ? () => kickParticipant(t.peerId) : undefined}
                           onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
                           isWatchingScreen={false}
                           onChallengeRps={challengeRps}
@@ -886,12 +915,16 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                         : 'grid grid-cols-2 lg:grid-cols-3 gap-4 max-w-6xl'
                   }`}
                 >
-                  {tiles.map(({ key, screenId, voiceVolume, ...t }) => (
+                  {tiles.map(({ key, screenId, voiceVolume, screenVolume, ...t }) => (
                     <ParticipantTile
                       key={key}
                       {...t}
                       voiceVolume={voiceVolume}
+                      screenVolume={screenVolume}
                       onVoiceVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'mic', v) : undefined}
+                      onScreenVolumeChange={!t.isLocal && t.peerId ? (v) => setVolume(t.peerId, 'screen', v) : undefined}
+                      canKick={isLocalOwner && !t.isLocal}
+                      onKick={isLocalOwner && !t.isLocal && t.peerId ? () => kickParticipant(t.peerId) : undefined}
                       onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
                       isWatchingScreen={false}
                       onChallengeRps={challengeRps}

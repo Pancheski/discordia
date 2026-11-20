@@ -1,5 +1,7 @@
 import { useCallback, useState } from 'react'
+import { ShieldAlert } from 'lucide-react'
 import { Lobby } from './components/Lobby'
+import { Modal } from './components/Modal'
 import { RoomPasswordModal } from './components/RoomPasswordModal'
 import { RoomView } from './components/RoomView'
 import { TitleBar } from './components/TitleBar'
@@ -21,7 +23,14 @@ interface PendingPasswordJoin extends JoinRequest {
 }
 
 export default function App() {
-  const controller = useRoom()
+  const [kickedNoticeOpen, setKickedNoticeOpen] = useState(false)
+  const handleKicked = useCallback(() => {
+    setKickedNoticeOpen(true)
+    if (window.location.search) {
+      history.replaceState(null, '', window.location.pathname)
+    }
+  }, [])
+  const controller = useRoom(handleKicked)
   const { snapshot, toasts, dismissToast, pushToast, join } = controller
   const [joining, setJoining] = useState(false)
   const [roomDisplayName, setRoomDisplayName] = useState<string | undefined>(undefined)
@@ -157,6 +166,27 @@ export default function App() {
           onCancel={() => setPendingJoin(null)}
         />
       )}
+      <Modal
+        open={kickedNoticeOpen}
+        onClose={() => setKickedNoticeOpen(false)}
+        labelledBy="kicked-notice-title"
+        widthClass="max-w-sm"
+        icon={<ShieldAlert size={20} className="text-dc-red" />}
+        title="Você foi removido da sala"
+        footer={
+          <button
+            type="button"
+            onClick={() => setKickedNoticeOpen(false)}
+            className="dc-btn-primary px-4 py-2 text-sm"
+          >
+            Voltar ao Lobby
+          </button>
+        }
+      >
+        <p className="text-sm leading-relaxed text-dc-muted">
+          O criador da sala removeu você da chamada e suas conexões de voz e vídeo foram encerradas.
+        </p>
+      </Modal>
       <Toasts toasts={toasts} onDismiss={dismissToast} />
     </div>
   )

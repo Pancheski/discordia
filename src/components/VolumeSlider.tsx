@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import type { CSSProperties } from 'react'
 import { Volume1, Volume2, VolumeX } from 'lucide-react'
 
@@ -12,7 +12,11 @@ interface VolumeSliderProps {
 
 export function VolumeSlider({ id, value, onChange, label, className = '' }: VolumeSliderProps) {
   const lastNonZero = useRef(value > 0 ? value : 1)
-  if (value > 0) lastNonZero.current = value
+
+  useEffect(() => {
+    if (value > 0) lastNonZero.current = value
+  }, [value])
+
   const pct = Math.round(value * 100)
   const Icon = value === 0 ? VolumeX : value < 0.5 ? Volume1 : Volume2
 

@@ -41,8 +41,12 @@ const INITIAL_REMOTE_PLAY: {
 }
 
 
-export function useRoom() {
+export function useRoom(onKicked?: () => void) {
   const managerRef = useRef<RoomManager | null>(null)
+  const onKickedRef = useRef(onKicked)
+  useEffect(() => {
+    onKickedRef.current = onKicked
+  }, [onKicked])
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [chat, setChat] = useState<ChatSnapshot>(EMPTY_CHAT)
@@ -79,22 +83,33 @@ export function useRoom() {
     [dismissToast],
   )
 
+  const resetRoomState = useCallback(() => {
+    setSnapshot(null)
+    setChat(EMPTY_CHAT)
+    setRpsDuel(null)
+    setTrioState(null)
+    setActiveApp(null)
+    setWheelState(INITIAL_WHEEL)
+    setLastGolfStroke(null)
+    setLastGolfReset(null)
+    setLastGolfHole(null)
+    setRemotePlay(INITIAL_REMOTE_PLAY)
+  }, [])
+
   const join = useCallback(
     async (name: string, room: string): Promise<boolean> => {
       if (managerRef.current) return true
-      setChat(EMPTY_CHAT)
-      setRpsDuel(null)
-      setTrioState(null)
-      setActiveApp(null)
-      setWheelState(INITIAL_WHEEL)
-      setLastGolfStroke(null)
-      setLastGolfReset(null)
-      setLastGolfHole(null)
-      setRemotePlay(INITIAL_REMOTE_PLAY)
+      resetRoomState()
       const manager = new RoomManager({
         onChange: setSnapshot,
         onToast: pushToast,
         onChat: setChat,
+        onKicked: () => {
+          if (managerRef.current === manager) managerRef.current = null
+          resetRoomState()
+          pushToast('error', 'Você foi removido da sala.')
+          onKickedRef.current?.()
+        },
         onRpsChange: setRpsDuel,
         onTrioChange: setTrioState,
         onActiveAppChange: setActiveApp,
@@ -113,23 +128,19 @@ export function useRoom() {
       }
       return ok
     },
-    [pushToast],
+    [pushToast, resetRoomState],
   )
 
   const leave = useCallback(() => {
     managerRef.current?.leave()
     managerRef.current = null
-    setSnapshot(null)
-    setChat(EMPTY_CHAT)
-    setRpsDuel(null)
-    setTrioState(null)
-    setActiveApp(null)
-    setWheelState(INITIAL_WHEEL)
-    setLastGolfStroke(null)
-    setLastGolfReset(null)
-    setLastGolfHole(null)
-    setRemotePlay(INITIAL_REMOTE_PLAY)
-  }, [])
+    resetRoomState()
+  }, [resetRoomState])
+
+  const kickParticipant = useCallback(
+    (peerId: string) => void managerRef.current?.kickParticipant(peerId),
+    [],
+  )
 
   const toggleMute = useCallback(() => managerRef.current?.toggleMute(), [])
   const toggleDeafen = useCallback(() => managerRef.current?.toggleDeafen(), [])
@@ -250,6 +261,7 @@ export function useRoom() {
     dismissToast,
     join,
     leave,
+    kickParticipant,
     toggleMute,
     toggleDeafen,
     startCamera,
