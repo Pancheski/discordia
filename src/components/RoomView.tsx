@@ -9,6 +9,8 @@ import {
   MicOff,
   Minimize2,
   MonitorUp,
+  PanelLeft,
+  PanelLeftClose,
   Power,
   Rocket,
   Users,
@@ -39,6 +41,11 @@ import { loadSavedKeybinds, type KeybindShortcuts } from '../lib/keybinds'
 import { buildRoomLink, copyToClipboard, detectCapabilities } from '../lib/utils'
 import type { AppActivityId, RoomSnapshot, ScreenSharePreset } from '../types'
 
+type FocusedStream = {
+  peerId: string
+  type: 'screen' | 'camera'
+}
+
 interface RoomViewProps {
   snapshot: RoomSnapshot
   controller: RoomController
@@ -52,6 +59,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     toggleCamera,
     switchCamera,
     switchMicrophone,
+    requestCameraStream,
     startScreenShare,
     stopScreenShare,
     setScreenPreset,
@@ -95,16 +103,16 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     installVigemDriver,
   } = controller
 
-  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [chatOpen, setChatOpen] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 1024 : true))
   const [soundboardOpen, setSoundboardOpen] = useState(false)
   const [appsModalOpen, setAppsModalOpen] = useState(false)
   const [keybindsModalOpen, setKeybindsModalOpen] = useState(false)
   const [remotePlayModalOpen, setRemotePlayModalOpen] = useState(false)
   const [minimizedApp, setMinimizedApp] = useState<AppActivityId>(null)
-  const [watchedScreenId, setWatchedScreenId] = useState<string | null>(null)
-  const [spotlightTileKey, setSpotlightTileKey] = useState<string | null>(null)
-  const [stagePriority, setStagePriority] = useState<'app' | 'screen' | 'spotlight'>('app')
+  const [focusedStream, setFocusedStream] = useState<FocusedStream | null>(null)
+  const [stagePriority, setStagePriority] = useState<'app' | 'stream'>('app')
   const [isSpotlightFullscreen, setIsSpotlightFullscreen] = useState(false)
   const spotlightContainerRef = useRef<HTMLDivElement | null>(null)
   const [autoplayBlocked, setAutoplayBlocked] = useState(false)
@@ -139,16 +147,19 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     [launchApp],
   )
 
-  const handleWatchScreen = useCallback((screenId: string) => {
-    setWatchedScreenId(screenId)
-    setStagePriority('screen')
-    if (screenId && screenId !== 'local') {
-      requestScreenStream(screenId)
-    }
-  }, [requestScreenStream])
+  const handleWatchScreen = useCallback(
+    (screenId: string) => {
+      setFocusedStream({ peerId: screenId, type: 'screen' })
+      setStagePriority('stream')
+      if (screenId && screenId !== 'local') {
+        requestScreenStream(screenId)
+      }
+    },
+    [requestScreenStream],
+  )
 
   const handleStopWatchingScreen = useCallback(() => {
-    setWatchedScreenId(null)
+    setFocusedStream((prev) => (prev?.type === 'screen' ? null : prev))
     setStagePriority('app')
   }, [])
 
@@ -196,15 +207,15 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
   const screens = useMemo<ScreenSource[]>(() => {
     const list: ScreenSource[] = []
     for (const p of participants) {
-      const stream = screenStreams[p.peerId] ?? p.screenStream
-      if (stream) {
+      const stream = screenStreams[p.peerId] ?? p.screenStream ?? null
+      if (stream || p.sharing) {
         list.push({
           id: p.peerId,
           name: p.name,
           stream,
           isLocal: false,
           volume: p.screenVolume,
-          hasAudio: stream.getAudioTracks().length > 0,
+          hasAudio: Boolean(stream && stream.getAudioTracks().length > 0),
           stats: p.stats,
         })
       }
@@ -222,9 +233,12 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     return list
   }, [participants, screenStreams, local.screenStream, local.name, local.screenHasAudio])
 
-  const watchedScreen = useMemo(
-    () => (watchedScreenId ? (screens.find((s) => s.id === watchedScreenId) ?? null) : null),
-    [screens, watchedScreenId],
+  const focusedScreen = useMemo(
+    () =>
+      focusedStream?.type === 'screen'
+        ? (screens.find((s) => s.id === focusedStream.peerId) ?? null)
+        : null,
+    [screens, focusedStream],
   )
 
   const tiles = useMemo(
@@ -279,27 +293,25 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     ],
   )
 
-  const spotlightTile = useMemo(
-    () => (spotlightTileKey ? (tiles.find((t) => t.key === spotlightTileKey) ?? null) : null),
-    [tiles, spotlightTileKey],
+  const focusedCameraTile = useMemo(
+    () =>
+      focusedStream?.type === 'camera'
+        ? (tiles.find((t) => t.key === focusedStream.peerId) ?? null)
+        : null,
+    [tiles, focusedStream],
   )
 
   const activeStageApp: AppActivityId = activeApp && minimizedApp !== activeApp ? activeApp : null
   const isAppMinimized = Boolean(activeApp && minimizedApp === activeApp)
-  const hasStageContent = Boolean(activeStageApp || watchedScreen || spotlightTile)
+  const hasFocusedStageStream = Boolean(focusedScreen || focusedCameraTile)
+  const hasStageContent = Boolean(activeStageApp || hasFocusedStageStream)
 
-  const showingSpotlightOnStage = Boolean(
-    spotlightTile &&
-      (stagePriority === 'spotlight' || (!activeStageApp && !watchedScreen)),
+  const showingStreamOnStage = Boolean(
+    hasFocusedStageStream && (!activeStageApp || stagePriority === 'stream'),
   )
-  const showingScreenOnStage = Boolean(
-    !showingSpotlightOnStage &&
-      watchedScreen &&
-      (!activeStageApp || stagePriority === 'screen'),
-  )
-  const showingAppOnStage = Boolean(
-    activeStageApp && !showingScreenOnStage && !showingSpotlightOnStage,
-  )
+  const showingCameraOnStage = Boolean(showingStreamOnStage && focusedCameraTile)
+  const showingScreenOnStage = Boolean(showingStreamOnStage && focusedScreen)
+  const showingAppOnStage = Boolean(activeStageApp && !showingStreamOnStage)
 
   const handleToggleSpotlightFullscreen = useCallback(async () => {
     const el = spotlightContainerRef.current
@@ -315,32 +327,31 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
     }
   }, [])
 
-  const handleExitSpotlight = useCallback(() => {
+  const handleExitCameraFocus = useCallback(() => {
     if (document.fullscreenElement) {
       void document.exitFullscreen().catch(() => {})
     }
-    setSpotlightTileKey(null)
-    if (watchedScreenId) {
-      setStagePriority('screen')
-    } else {
-      setStagePriority('app')
-    }
-  }, [watchedScreenId])
+    setFocusedStream((prev) => (prev?.type === 'camera' ? null : prev))
+    setStagePriority('app')
+  }, [])
 
   const handleTileDoubleClick = useCallback(
     (tileKey: string) => {
-      if (spotlightTileKey === tileKey && showingSpotlightOnStage) {
+      if (focusedStream?.type === 'camera' && focusedStream.peerId === tileKey && showingCameraOnStage) {
         if (document.fullscreenElement) {
           void document.exitFullscreen().catch(() => {})
         } else {
-          handleExitSpotlight()
+          handleExitCameraFocus()
         }
       } else {
-        setSpotlightTileKey(tileKey)
-        setStagePriority('spotlight')
+        setFocusedStream({ peerId: tileKey, type: 'camera' })
+        setStagePriority('stream')
+        if (tileKey && tileKey !== 'local') {
+          requestCameraStream(tileKey)
+        }
       }
     },
-    [spotlightTileKey, showingSpotlightOnStage, handleExitSpotlight],
+    [focusedStream, showingCameraOnStage, handleExitCameraFocus, requestCameraStream],
   )
 
   useEffect(() => {
@@ -352,15 +363,15 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
   }, [])
 
   useEffect(() => {
-    if (!spotlightTileKey) return
+    if (!showingCameraOnStage) return
     const onEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !document.fullscreenElement) {
-        handleExitSpotlight()
+        handleExitCameraFocus()
       }
     }
     window.addEventListener('keydown', onEsc)
     return () => window.removeEventListener('keydown', onEsc)
-  }, [spotlightTileKey, handleExitSpotlight])
+  }, [showingCameraOnStage, handleExitCameraFocus])
 
   const copyLink = useCallback(async () => {
     const ok = await copyToClipboard(buildRoomLink(room))
@@ -395,11 +406,11 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
   const toggleScreen = useCallback(() => {
     if (local.screenStream) {
       stopScreenShare()
-      if (watchedScreenId === 'local') setWatchedScreenId(null)
+      setFocusedStream((prev) => (prev?.type === 'screen' && prev.peerId === 'local' ? null : prev))
       return
     }
     handleRequestScreenShare()
-  }, [handleRequestScreenShare, local.screenStream, stopScreenShare, watchedScreenId])
+  }, [handleRequestScreenShare, local.screenStream, stopScreenShare])
 
   // ─── Atalhos Globais e Navegador (Mute / Deafen) ─────────────────────────
   const [activeKeybinds, setActiveKeybinds] = useState<KeybindShortcuts>(loadSavedKeybinds)
@@ -508,8 +519,10 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
         ownerId={ownerId}
         local={local}
         participants={participants}
-        open={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
+        open={isSidebarOpen}
+        mobileOpen={mobileSidebarOpen}
+        onClose={() => setMobileSidebarOpen(false)}
+        onToggleCollapse={() => setIsSidebarOpen((prev) => !prev)}
         onCopyLink={copyLink}
         onVolume={setVolume}
         onToggleMute={toggleMute}
@@ -522,11 +535,22 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
           <button
             id="open-sidebar-button"
             type="button"
-            onClick={() => setSidebarOpen(true)}
+            onClick={() => setMobileSidebarOpen(true)}
             className="-ml-1 rounded p-1.5 text-dc-muted transition hover:bg-dc-hover hover:text-dc-text md:hidden"
             aria-label="Abrir lista de participantes"
           >
             <Users size={18} />
+          </button>
+          <button
+            id="toggle-sidebar-button"
+            type="button"
+            onClick={() => setIsSidebarOpen((prev) => !prev)}
+            className="-ml-1 hidden rounded p-1.5 text-dc-muted transition hover:bg-dc-hover hover:text-dc-text md:inline-flex"
+            title={isSidebarOpen ? 'Recolher barra lateral' : 'Mostrar barra lateral'}
+            aria-label={isSidebarOpen ? 'Recolher barra lateral' : 'Mostrar barra lateral'}
+            aria-expanded={isSidebarOpen}
+          >
+            {isSidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
           </button>
           <Hash size={20} className="shrink-0 text-dc-muted" />
           <h1 className="truncate font-semibold text-dc-header">{room}</h1>
@@ -546,7 +570,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
               </button>
             )}
 
-            {screens.length > 0 && !watchedScreen && (
+            {screens.length > 0 && !showingScreenOnStage && (
               <button
                 type="button"
                 onClick={() => handleWatchScreen(screens[0].id)}
@@ -554,7 +578,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
               >
                 <MonitorUp size={13} />
                 <span>
-                  {screens.length === 1 ? `${screens[0].name} ao vivo` : `${screens.length} transmissões`} · Assistir
+                  {screens.length === 1 ? `${screens[0].name} ao vivo` : `${screens.length} transmissões`} · Assistir Tela
                 </span>
               </button>
             )}
@@ -683,7 +707,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
         <section className="flex min-h-0 flex-1 flex-col gap-3 p-3 sm:p-4">
           {hasStageContent ? (
             <>
-              {[Boolean(activeStageApp), Boolean(watchedScreen), Boolean(spotlightTile)].filter(Boolean).length > 1 && (
+              {Boolean(activeStageApp) && hasFocusedStageStream && (
                 <div className="flex shrink-0 items-center gap-2">
                   {activeStageApp && (
                     <button
@@ -699,10 +723,10 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                       <span>{appLabel}</span>
                     </button>
                   )}
-                  {watchedScreen && (
+                  {focusedScreen && (
                     <button
                       type="button"
-                      onClick={() => setStagePriority('screen')}
+                      onClick={() => setStagePriority('stream')}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
                         showingScreenOnStage
                           ? 'bg-dc-red text-white shadow'
@@ -710,68 +734,71 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                       }`}
                     >
                       <Eye size={13} />
-                      <span>{watchedScreen.name}</span>
+                      <span>Tela · {focusedScreen.name}</span>
                     </button>
                   )}
-                  {spotlightTile && (
+                  {focusedCameraTile && (
                     <button
                       type="button"
-                      onClick={() => setStagePriority('spotlight')}
+                      onClick={() => setStagePriority('stream')}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                        showingSpotlightOnStage
+                        showingCameraOnStage
                           ? 'bg-emerald-600 text-white shadow'
                           : 'bg-dc-darker text-dc-muted hover:text-white'
                       }`}
                     >
                       <Video size={13} />
-                      <span>{spotlightTile.name}</span>
+                      <span>Câmera · {focusedCameraTile.name}</span>
                     </button>
                   )}
                 </div>
               )}
 
               <div className="flex-1 min-h-0 w-full h-full rounded-xl overflow-hidden">
-                {showingSpotlightOnStage && spotlightTile ? (
+                {showingCameraOnStage && focusedCameraTile ? (
                   <div
+                    key={`camera-stage-${focusedCameraTile.key}`}
                     ref={spotlightContainerRef}
                     className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-xl bg-dc-darkest"
                   >
                     <ParticipantTile
-                      key={spotlightTile.key}
-                      peerId={spotlightTile.peerId}
-                      name={spotlightTile.name}
-                      speaking={spotlightTile.speaking}
-                      muted={spotlightTile.muted}
-                      sharing={spotlightTile.sharing}
-                      cameraStream={spotlightTile.cameraStream}
-                      isLocal={spotlightTile.isLocal}
-                      micAvailable={spotlightTile.micAvailable}
-                      connectionState={spotlightTile.connectionState}
+                      key={`camera-tile-${focusedCameraTile.key}`}
+                      peerId={focusedCameraTile.peerId}
+                      name={focusedCameraTile.name}
+                      speaking={focusedCameraTile.speaking}
+                      muted={focusedCameraTile.muted}
+                      sharing={focusedCameraTile.sharing}
+                      cameraStream={focusedCameraTile.cameraStream}
+                      isLocal={focusedCameraTile.isLocal}
+                      micAvailable={focusedCameraTile.micAvailable}
+                      connectionState={focusedCameraTile.connectionState}
                       spotlight
-                      voiceVolume={spotlightTile.voiceVolume}
-                      screenVolume={spotlightTile.screenVolume}
+                      voiceVolume={focusedCameraTile.voiceVolume}
+                      screenVolume={focusedCameraTile.screenVolume}
                       onVoiceVolumeChange={
-                        !spotlightTile.isLocal && spotlightTile.peerId
-                          ? (v) => setVolume(spotlightTile.peerId, 'mic', v)
+                        !focusedCameraTile.isLocal && focusedCameraTile.peerId
+                          ? (v) => setVolume(focusedCameraTile.peerId, 'mic', v)
                           : undefined
                       }
                       onScreenVolumeChange={
-                        !spotlightTile.isLocal && spotlightTile.peerId
-                          ? (v) => setVolume(spotlightTile.peerId, 'screen', v)
+                        !focusedCameraTile.isLocal && focusedCameraTile.peerId
+                          ? (v) => setVolume(focusedCameraTile.peerId, 'screen', v)
                           : undefined
                       }
-                      canKick={isLocalOwner && !spotlightTile.isLocal}
+                      canKick={isLocalOwner && !focusedCameraTile.isLocal}
                       onKick={
-                        isLocalOwner && !spotlightTile.isLocal && spotlightTile.peerId
-                          ? () => kickParticipant(spotlightTile.peerId)
+                        isLocalOwner && !focusedCameraTile.isLocal && focusedCameraTile.peerId
+                          ? () => kickParticipant(focusedCameraTile.peerId)
                           : undefined
                       }
                       onWatchScreen={
-                        spotlightTile.screenId ? () => handleWatchScreen(spotlightTile.screenId!) : undefined
+                        focusedCameraTile.screenId
+                          ? () => handleWatchScreen(focusedCameraTile.screenId!)
+                          : undefined
                       }
                       isWatchingScreen={false}
                       onChallengeRps={challengeRps}
-                      onDoubleClick={() => handleTileDoubleClick(spotlightTile.key)}
+                      onDoubleClick={() => handleTileDoubleClick(focusedCameraTile.key)}
                     />
 
                     {/* Botões discretos no canto superior direito do vídeo em destaque */}
@@ -787,7 +814,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                       </button>
                       <button
                         type="button"
-                        onClick={handleExitSpotlight}
+                        onClick={handleExitCameraFocus}
                         className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-black/70 px-3 py-1.5 text-xs font-bold text-white shadow-lg backdrop-blur-md transition hover:bg-dc-red"
                         title="Voltar para Grade (Esc)"
                       >
@@ -796,13 +823,13 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                       </button>
                     </div>
                   </div>
-                ) : showingScreenOnStage && watchedScreen ? (
+                ) : showingScreenOnStage && focusedScreen ? (
                   <ScreenStage
-                    key={watchedScreen.id}
-                    screen={watchedScreen}
+                    key={`screen-stage-${focusedScreen.id}`}
+                    screen={focusedScreen}
                     screenPreset={local.screenPreset}
                     onPresetChange={setScreenPreset}
-                    onVolumeChange={(v) => !watchedScreen.isLocal && setVolume(watchedScreen.id, 'screen', v)}
+                    onVolumeChange={(v) => !focusedScreen.isLocal && setVolume(focusedScreen.id, 'screen', v)}
                     onStopWatching={handleStopWatchingScreen}
                   />
                 ) : (
@@ -848,17 +875,17 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                   showingScreenOnStage &&
                   screens.map((s) => (
                     <ScreenThumb
-                      key={s.id}
+                      key={`screen-thumb-${s.id}`}
                       screen={s}
-                      active={s.id === watchedScreen?.id}
+                      active={s.id === focusedScreen?.id}
                       onSelect={() => handleWatchScreen(s.id)}
                     />
                   ))}
                 {tiles
-                  .filter((t) => !(showingSpotlightOnStage && spotlightTile?.key === t.key))
+                  .filter((t) => !(showingCameraOnStage && focusedCameraTile?.key === t.key))
                   .map(({ key, screenId, voiceVolume, screenVolume, ...t }) => (
                     <ParticipantTile
-                      key={key}
+                      key={`bottom-tile-${key}`}
                       {...t}
                       compact
                       voiceVolume={voiceVolume}
@@ -868,7 +895,7 @@ export function RoomView({ snapshot, controller }: RoomViewProps) {
                       canKick={isLocalOwner && !t.isLocal}
                       onKick={isLocalOwner && !t.isLocal && t.peerId ? () => kickParticipant(t.peerId) : undefined}
                       onWatchScreen={screenId ? () => handleWatchScreen(screenId) : undefined}
-                      isWatchingScreen={Boolean(screenId && watchedScreen?.id === screenId && showingScreenOnStage)}
+                      isWatchingScreen={Boolean(screenId && focusedScreen?.id === screenId && showingScreenOnStage)}
                       onChallengeRps={challengeRps}
                       onDoubleClick={() => handleTileDoubleClick(key)}
                     />

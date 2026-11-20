@@ -8,6 +8,7 @@ import {
   MicOff,
   MonitorUp,
   MoreVertical,
+  PanelLeftClose,
   Swords,
   Volume2,
   VolumeX,
@@ -28,7 +29,9 @@ interface SidebarProps {
   local: LocalState
   participants: RemoteParticipant[]
   open: boolean
+  mobileOpen: boolean
   onClose: () => void
+  onToggleCollapse?: () => void
   onCopyLink: () => Promise<boolean>
   onVolume: (peerId: string, kind: MediaKind, value: number) => void
   onToggleMute: () => void
@@ -47,7 +50,9 @@ export function Sidebar({
   local,
   participants,
   open,
+  mobileOpen,
   onClose,
+  onToggleCollapse,
   onCopyLink,
   onVolume,
   onToggleMute,
@@ -88,17 +93,18 @@ export function Sidebar({
       {/* Overlay mobile */}
       <div
         className={`fixed inset-0 z-30 bg-black/60 backdrop-blur-sm transition-opacity md:hidden ${
-          open ? 'opacity-100' : 'pointer-events-none opacity-0'
+          mobileOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
         }`}
         onClick={onClose}
         aria-hidden="true"
       />
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col bg-dc-darker transition-transform duration-300 md:static md:translate-x-0 ${
-          open ? 'translate-x-0' : '-translate-x-full'
-        }`}
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col overflow-hidden bg-dc-darker transition-all duration-300 ease-in-out md:static md:translate-x-0 ${
+          mobileOpen ? 'w-72 translate-x-0' : 'w-72 -translate-x-full'
+        } ${open ? 'md:w-72 md:opacity-100' : 'md:pointer-events-none md:w-0 md:min-w-0 md:opacity-0'}`}
         aria-label="Participantes"
       >
+        <div className="flex h-full w-72 shrink-0 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-black/30 px-4 shadow-sm">
           <h2 className="flex min-w-0 items-center gap-1.5 font-semibold text-dc-header">
             <Hash size={18} className="shrink-0 text-dc-muted" />
@@ -115,6 +121,17 @@ export function Sidebar({
             >
               {copied ? <Check size={16} /> : <Copy size={16} />}
             </button>
+            {onToggleCollapse && (
+              <button
+                type="button"
+                onClick={onToggleCollapse}
+                className="hidden rounded p-1.5 text-dc-muted transition hover:bg-dc-hover hover:text-dc-text md:inline-flex"
+                title="Recolher barra lateral"
+                aria-label="Recolher barra lateral"
+              >
+                <PanelLeftClose size={16} />
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -285,6 +302,7 @@ export function Sidebar({
             {local.muted ? <MicOff size={18} /> : <Mic size={18} />}
           </button>
         </footer>
+        </div>
       </aside>
 
       {menuParticipant && activeMenu && (
